@@ -2,9 +2,12 @@
 
 Una aplicación de escritorio para descargar audio de **YouTube** y **SoundCloud** en formato MP3 o M4A, con edición de metadatos completa y recorte de audio.
 
-<img width="720" height="564" alt="image" src="https://github.com/user-attachments/assets/5ce127c1-e3d7-457c-ac3b-fdfd7655a216" />
-<img width="765" height="526" alt="image" src="https://github.com/user-attachments/assets/e38eeb87-f6af-4aa7-8ab8-996579ef3e61" />
-<img width="893" height="691" alt="image" src="https://github.com/user-attachments/assets/f195855f-2d61-4b59-97ff-9b4e3d4b6d0f" />
+<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/5ce127c1-e3d7-457c-ac3b-fdfd7655a216" />
+
+<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/e38eeb87-f6af-4aa7-8ab8-996579ef3e61" />
+
+<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/f195855f-2d61-4b59-97ff-9b4e3d4b6d0f" />
+
 <img width="480" height="405" alt="Screenshot 2026-01-05 at 4 48 01 PM" src="https://github.com/user-attachments/assets/bf3eaea1-5be6-4806-8fe0-c424e38739c8" />
 
 ## ✨ Características
