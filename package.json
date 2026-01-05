@@ -1,0 +1,71 @@
+{
+  "name": "audrip",
+  "version": "1.0.0",
+  "description": "Download audio from YouTube and SoundCloud with metadata editing",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "vite build && electron-builder"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "wavesurfer.js": "^7.8.0",
+    "music-metadata-browser": "^2.5.10"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "concurrently": "^9.1.0",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.audrip.app",
+    "productName": "AudRip",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "bin/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/${os}",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "build/icon_win.png",
+      "publisherName": "AudRip",
+      "legalTrademarks": "AudRip - Audio Ripper",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    }
+  }
+}
