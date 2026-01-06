@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Home as HomeIcon, History as HistoryIcon, Headphones as HeadphonesIcon, Settings as SettingsIcon, ArrowLeft as ArrowLeftIcon } from 'lucide-react'
+import { Home as HomeIcon, History as HistoryIcon, Headphones as HeadphonesIcon, Settings as SettingsIcon } from 'lucide-react'
 import UrlInput from './components/UrlInput'
 import DownloadHistory from './components/DownloadHistory'
 import PlaylistEditor from './components/PlaylistEditor'

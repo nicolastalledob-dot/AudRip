@@ -1,4 +1,4 @@
-import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
+import { useCallback, useRef, useEffect, useState } from 'react'
 
 interface TrimRange {
     start: number
@@ -114,17 +114,7 @@ function AudioTrimmer({ duration, trimRange, onTrimChange }: AudioTrimmerProps) 
     }, [positionToTime, start, end, isDragging, onTrimChange])
 
     // Generate time markers
-    const markerCount = Math.max(2, Math.min(10, Math.floor(duration / 10)))
-    const markers = useMemo(() => {
-        const result = []
-        for (let i = 0; i <= markerCount; i++) {
-            const time = (duration / markerCount) * i
-            result.push({ time, percent: timeToPercent(time) })
-        }
-        return result
-    }, [duration, markerCount, timeToPercent])
 
-    const trimmedDuration = end - start
 
     return (
         <div className="panel audio-trimmer-panel">
