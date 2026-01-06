@@ -5,6 +5,12 @@ import { spawn } from 'child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync } from 'fs'
 import { homedir, platform } from 'os'
 
+// Register scheme as privileged
+const { protocol } = require('electron')
+protocol.registerSchemesAsPrivileged([
+    { scheme: 'media', privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true } }
+])
+
 let mainWindow: BrowserWindow | null = null
 
 // Get the path to bundled binaries
@@ -59,6 +65,19 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit()
     }
+})
+
+// Register media protocol for local file access
+app.whenReady().then(() => {
+    const { protocol } = require('electron')
+    protocol.registerFileProtocol('media', (request, callback) => {
+        const url = request.url.replace('media://', '')
+        try {
+            return callback(decodeURIComponent(url))
+        } catch (error) {
+            console.error(error)
+        }
+    })
 })
 
 app.on('activate', () => {
@@ -309,6 +328,72 @@ ipcMain.handle('download-audio', async (_event, options: {
             }
         }
 
+        // --- CONCURRENT COVER ART LOGIC START ---
+        const downloadImage = (url: string, dest: string): Promise<boolean> => {
+            return new Promise((resolve) => {
+                const request = net.request(url)
+                request.on('response', (response) => {
+                    if (response.statusCode !== 200) { resolve(false); return }
+                    const chunks: Buffer[] = []
+                    response.on('data', (chunk) => chunks.push(chunk))
+                    response.on('end', () => {
+                        try {
+                            const buffer = Buffer.concat(chunks)
+                            writeFileSync(dest, buffer)
+                            resolve(true)
+                        } catch (e) { resolve(false) }
+                    })
+                })
+                request.on('error', () => resolve(false))
+                request.end()
+            })
+        }
+
+        const findBestCoverArt = async (): Promise<{ path: string | null, isLegacy: boolean }> => {
+            if (customArtPath && existsSync(customArtPath)) return { path: customArtPath, isLegacy: false }
+            if (!options.coverArt || !options.coverArt.startsWith('http')) return { path: null, isLegacy: false }
+
+            const tempImgPath = join(downloadDir, `yt_${tempId}_cover.jpg`)
+            let fPath: string | null = null
+            let isLegacy = false
+
+            if (options.coverArt.includes('ytimg.com') || options.url.includes('youtube') || options.url.includes('youtu.be')) {
+                const baseId = options.coverArt.match(/\/vi\/([^\/]+)\//)?.[1] || options.id
+                if (baseId) {
+                    const maxResUrl = `https://i.ytimg.com/vi/${baseId}/maxresdefault.jpg`
+                    const sdUrl = `https://i.ytimg.com/vi/${baseId}/sddefault.jpg`
+                    const hqUrl = `https://i.ytimg.com/vi/${baseId}/hqdefault.jpg`
+                    const mqUrl = `https://i.ytimg.com/vi/${baseId}/mqdefault.jpg`
+
+                    console.log(`[Main] Checking art (Parallel): ${maxResUrl}`)
+                    if (await downloadImage(maxResUrl, tempImgPath)) {
+                        fPath = tempImgPath
+                    } else if (await downloadImage(sdUrl, tempImgPath)) {
+                        fPath = tempImgPath; isLegacy = true
+                    } else if (await downloadImage(hqUrl, tempImgPath)) {
+                        fPath = tempImgPath; isLegacy = true
+                    } else if (await downloadImage(mqUrl, tempImgPath)) {
+                        fPath = tempImgPath; isLegacy = true
+                    }
+                }
+            } else if (options.url.includes('soundcloud.com')) {
+                const scUrl = options.coverArt
+                const replacements = ['t3000x3000', 'original', 't500x500']
+                for (const size of replacements) {
+                    if (fPath) break
+                    const highResUrl = scUrl.replace(/-\w+\.jpg$/i, `-${size}.jpg`).replace(/-\w+\.png$/i, `-${size}.png`)
+                    if (highResUrl !== scUrl && await downloadImage(highResUrl, tempImgPath)) fPath = tempImgPath
+                }
+            }
+
+            if (!fPath && await downloadImage(options.coverArt, tempImgPath)) fPath = tempImgPath
+            return { path: fPath, isLegacy }
+        }
+
+        // Start task immediately
+        const coverArtTask = findBestCoverArt()
+        // --- CONCURRENT COVER ART LOGIC END ---
+
         console.log(`[Main] Starting yt-dlp separate mode: ${ytdlpArgs.join(' ')}`)
 
         const downloadProc = spawn(ytdlpCmd, ytdlpArgs)
@@ -353,34 +438,11 @@ ipcMain.handle('download-audio', async (_event, options: {
             // 2. Download Cover Art Manually (prioritize High Res, avoid 4:3 letterbox)
             _event.sender.send('download-progress', { stage: 'converting', percent: 0 })
 
+            // Wait for concurrent cover art task
+            const coverResult = await coverArtTask
+            let imagePath = coverResult.path
+            let isLegacyThumbnail = coverResult.isLegacy
             let audioPath: string | null = null
-            let imagePath: string | null = null
-
-            // Manual Image Download Helper
-            const downloadImage = (url: string, dest: string): Promise<boolean> => {
-                return new Promise((resolve) => {
-                    const request = net.request(url)
-                    request.on('response', (response) => {
-                        if (response.statusCode !== 200) {
-                            resolve(false)
-                            return
-                        }
-                        const chunks: Buffer[] = []
-                        response.on('data', (chunk) => chunks.push(chunk))
-                        response.on('end', () => {
-                            try {
-                                const buffer = Buffer.concat(chunks)
-                                writeFileSync(dest, buffer)
-                                resolve(true)
-                            } catch (e) {
-                                resolve(false)
-                            }
-                        })
-                    })
-                    request.on('error', () => resolve(false))
-                    request.end()
-                })
-            }
 
             try {
                 // Determine audio file path
@@ -388,41 +450,77 @@ ipcMain.handle('download-audio', async (_event, options: {
                 const audioFile = files.find(f => f.startsWith(tempBaseName) && !f.endsWith('.jpg') && !f.endsWith('.jpeg') && !f.endsWith('.webp') && !f.endsWith('.png') && !f.endsWith('.part'))
                 if (audioFile) audioPath = join(downloadDir, audioFile)
 
-                // Handle Cover Art
-                if (customArtPath && existsSync(customArtPath)) {
-                    imagePath = customArtPath
-                } else if (options.coverArt && options.coverArt.startsWith('http')) {
-                    // Manual download handling
-                    let downloadUrl = options.coverArt
-                    const tempImgPath = join(downloadDir, `yt_${tempId}_cover.jpg`)
+                if (false) { // Handle Cover Art (DISABLED - CONCURRENT LOGIC USED)
+                    if (customArtPath && existsSync(customArtPath)) {
+                        imagePath = customArtPath
+                    } else if (options.coverArt && options.coverArt.startsWith('http')) {
+                        // Manual download handling
+                        let downloadUrl = options.coverArt
+                        const tempImgPath = join(downloadDir, `yt_${tempId}_cover.jpg`)
 
-                    // YouTube specific high-res logic
-                    if (options.coverArt.includes('ytimg.com') || options.url.includes('youtube') || options.url.includes('youtu.be')) {
-                        const baseId = options.coverArt.match(/\/vi\/([^\/]+)\//)?.[1] || options.id
-                        if (baseId) {
-                            const maxResUrl = `https://i.ytimg.com/vi/${baseId}/maxresdefault.jpg`
-                            const mqUrl = `https://i.ytimg.com/vi/${baseId}/mqdefault.jpg`
+                        // YouTube specific high-res logic
+                        if (options.coverArt.includes('ytimg.com') || options.url.includes('youtube') || options.url.includes('youtu.be')) {
+                            const baseId = options.coverArt.match(/\/vi\/([^\/]+)\//)?.[1] || options.id
+                            if (baseId) {
+                                const maxResUrl = `https://i.ytimg.com/vi/${baseId}/maxresdefault.jpg`
+                                const sdUrl = `https://i.ytimg.com/vi/${baseId}/sddefault.jpg`
+                                const hqUrl = `https://i.ytimg.com/vi/${baseId}/hqdefault.jpg`
+                                const mqUrl = `https://i.ytimg.com/vi/${baseId}/mqdefault.jpg`
 
-                            console.log(`[Main] Attempting maxres art: ${maxResUrl}`)
-                            if (await downloadImage(maxResUrl, tempImgPath)) {
-                                imagePath = tempImgPath
-                            } else {
-                                console.log(`[Main] Falling back to mqdefault: ${mqUrl}`)
-                                if (await downloadImage(mqUrl, tempImgPath)) {
+                                console.log(`[Main] Attempting maxres art: ${maxResUrl}`)
+                                if (await downloadImage(maxResUrl, tempImgPath)) {
                                     imagePath = tempImgPath
+                                } else {
+                                    console.log(`[Main] Maxres failed. Trying sddefault: ${sdUrl}`)
+                                    if (await downloadImage(sdUrl, tempImgPath)) {
+                                        imagePath = tempImgPath
+                                        isLegacyThumbnail = true
+                                    } else {
+                                        console.log(`[Main] Sddefault failed. Trying hqdefault: ${hqUrl}`)
+                                        if (await downloadImage(hqUrl, tempImgPath)) {
+                                            imagePath = tempImgPath
+                                            isLegacyThumbnail = true
+                                        } else {
+                                            console.log(`[Main] Hqdefault failed. Trying mqdefault: ${mqUrl}`)
+                                            if (await downloadImage(mqUrl, tempImgPath)) {
+                                                imagePath = tempImgPath
+                                                isLegacyThumbnail = true
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+                        } else if (options.url.includes('soundcloud.com')) {
+                            // SoundCloud specific high-res logic
+                            // Urls usually look like: https://i1.sndcdn.com/artworks-...-t500x500.jpg
+                            // We can try replacing the size suffix with 'original' or keep 't500x500' if it was smaller
+                            const scUrl = options.coverArt
+                            const replacements = ['t3000x3000', 'original', 't500x500']
+
+                            // Try to extract the base URL without the size suffix if possible, 
+                            // though SC urls are a bit variable. 
+                            // Simple replacement strategy:
+                            for (const size of replacements) {
+                                if (imagePath) break
+                                const highResUrl = scUrl.replace(/-\w+\.jpg$/i, `-${size}.jpg`).replace(/-\w+\.png$/i, `-${size}.png`)
+                                if (highResUrl !== scUrl) {
+                                    console.log(`[Main] Attempting SC high-res art: ${highResUrl}`)
+                                    if (await downloadImage(highResUrl, tempImgPath)) {
+                                        imagePath = tempImgPath
+                                    }
+                                }
+                            }
+                        }
+
+                        // Generic fallback (original URL provided)
+                        if (!imagePath) {
+                            if (await downloadImage(downloadUrl, tempImgPath)) {
+                                imagePath = tempImgPath
                             }
                         }
                     }
 
-                    // Generic (SoundCloud etc) or if YouTube specialized failed but original might work
-                    if (!imagePath) {
-                        if (await downloadImage(downloadUrl, tempImgPath)) {
-                            imagePath = tempImgPath
-                        }
-                    }
-                }
-
+                } // End of Disabled Block
                 // Fallback to yt-dlp downloaded thumb if manual failed (rare)
                 if (!imagePath) {
                     let imageFile = files.find(f => f.startsWith(tempBaseName) && (f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.webp') || f.endsWith('.png')))
@@ -466,15 +564,23 @@ ipcMain.handle('download-audio', async (_event, options: {
 
                 // Default to 1:1 if not specified
                 const aspectRatio = options.coverArtAspectRatio || '1:1'
-                console.log(`[Main] Cover art aspect ratio: ${aspectRatio}`)
+                console.log(`[Main] FFmpeg processing options:AspectRatio=${aspectRatio}, IsLegacy=${isLegacyThumbnail}, Path=${imagePath}`)
 
-                // Use filter chain that matches CSS 'object-fit: cover' behavior exactly:
-                // Scale so the image COVERS the target box, then crop center.
-                // This prevents the "zoomed in" look from aggressive pre-cropping.
                 if (aspectRatio === '1:1') {
-                    // Scale to fill 1400x1400 (force_original_aspect_ratio=increase ensure min dim is 1400)
-                    // Then crop central 1400x1400
-                    ffmpegArgs.push('-vf', 'scale=1400:1400:force_original_aspect_ratio=increase,crop=1400:1400')
+                    if (isLegacyThumbnail) {
+                        // Legacy thumbnails (sddefault/hqdefault) are often 4:3 with black bars (letterbox) containing 16:9 content.
+                        // Filter 1: Crop to 16:9 ratio (recovers the content, removes top/bottom bars) -> Explicit center
+                        // Filter 2: Scale to COVER 1000x1000
+                        // Filter 3: Crop central 1000x1000
+                        const cropTo169 = "crop=iw:iw*9/16:(iw-ow)/2:(ih-oh)/2"
+                        const scaleTo1000 = "scale=1000:1000:force_original_aspect_ratio=increase"
+                        const cropTo1000 = "crop=1000:1000"
+
+                        ffmpegArgs.push('-vf', `${cropTo169},${scaleTo1000},${cropTo1000}`)
+                    } else {
+                        // Modern/HighRes
+                        ffmpegArgs.push('-vf', "scale=1000:1000:force_original_aspect_ratio=increase,crop=1000:1000")
+                    }
                 } else if (aspectRatio === '16:9') {
                     // Scale to fill 1920x1080, then crop center
                     ffmpegArgs.push('-vf', 'scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080')
@@ -768,5 +874,143 @@ ipcMain.handle('process-album-art', async (_event, options: {
             }
         })
     })
+})
+
+// Get music library from downloads folder
+ipcMain.handle('get-music-library', async () => {
+    const downloadDir = getDownloadDir()
+    const ffprobe = getBinaryPath(platform() === 'win32' ? 'ffprobe.exe' : 'ffprobe')
+    const ffprobeCmd = existsSync(ffprobe) ? ffprobe : 'ffprobe'
+
+    const audioExtensions = ['.mp3', '.m4a', '.aac', '.ogg', '.flac', '.wav']
+
+    try {
+        const files = readdirSync(downloadDir)
+        const audioFiles = files.filter(f => {
+            const ext = f.toLowerCase().slice(f.lastIndexOf('.'))
+            return audioExtensions.includes(ext)
+        })
+
+        const tracks = []
+
+        for (const file of audioFiles) {
+            const filePath = join(downloadDir, file)
+
+            try {
+                // Get metadata using ffprobe
+                const metadata = await new Promise<{
+                    title: string
+                    artist: string
+                    album: string
+                    duration: number
+                    coverArt: string | null
+                }>((resolve) => {
+                    const args = [
+                        '-v', 'quiet',
+                        '-print_format', 'json',
+                        '-show_format',
+                        '-show_streams',
+                        filePath
+                    ]
+
+                    const proc = spawn(ffprobeCmd, args)
+                    let stdout = ''
+
+                    proc.stdout.on('data', (data) => {
+                        stdout += data.toString()
+                    })
+
+                    proc.on('close', async (code) => {
+                        if (code !== 0) {
+                            // Fallback to filename parsing
+                            const nameWithoutExt = file.slice(0, file.lastIndexOf('.'))
+                            resolve({
+                                title: nameWithoutExt,
+                                artist: 'Unknown Artist',
+                                album: '',
+                                duration: 0,
+                                coverArt: null
+                            })
+                            return
+                        }
+
+                        try {
+                            const info = JSON.parse(stdout)
+                            const format = info.format || {}
+                            const tags = format.tags || {}
+
+                            // Try to extract cover art
+                            let coverArt: string | null = null
+                            const videoStream = (info.streams || []).find(
+                                (s: { codec_type: string; codec_name: string }) =>
+                                    s.codec_type === 'video' && s.codec_name !== 'mjpeg' || s.codec_name === 'mjpeg'
+                            )
+
+                            if (videoStream) {
+                                // Extract cover art using ffmpeg
+                                const ffmpeg = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+                                const ffmpegCmd = existsSync(ffmpeg) ? ffmpeg : 'ffmpeg'
+                                const tempDir = join(app.getPath('temp'), 'audrip-covers')
+                                if (!existsSync(tempDir)) {
+                                    mkdirSync(tempDir, { recursive: true })
+                                }
+                                const coverPath = join(tempDir, `cover_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`)
+
+                                try {
+                                    await new Promise<void>((res) => {
+                                        const extractProc = spawn(ffmpegCmd, [
+                                            '-i', filePath,
+                                            '-an',
+                                            '-vcodec', 'mjpeg',
+                                            '-vframes', '1',
+                                            '-y',
+                                            coverPath
+                                        ])
+                                        extractProc.on('close', () => res())
+                                        extractProc.on('error', () => res())
+                                    })
+
+                                    if (existsSync(coverPath)) {
+                                        const imageData = readFileSync(coverPath)
+                                        coverArt = `data:image/jpeg;base64,${imageData.toString('base64')}`
+                                        try { unlinkSync(coverPath) } catch { }
+                                    }
+                                } catch { }
+                            }
+
+                            resolve({
+                                title: tags.title || tags.TITLE || file.slice(0, file.lastIndexOf('.')),
+                                artist: tags.artist || tags.ARTIST || 'Unknown Artist',
+                                album: tags.album || tags.ALBUM || '',
+                                duration: parseFloat(format.duration) || 0,
+                                coverArt
+                            })
+                        } catch (e) {
+                            const nameWithoutExt = file.slice(0, file.lastIndexOf('.'))
+                            resolve({
+                                title: nameWithoutExt,
+                                artist: 'Unknown Artist',
+                                album: '',
+                                duration: 0,
+                                coverArt: null
+                            })
+                        }
+                    })
+                })
+
+                tracks.push({
+                    path: filePath,
+                    ...metadata
+                })
+            } catch (e) {
+                console.error(`Failed to process ${file}:`, e)
+            }
+        }
+
+        return tracks
+    } catch (e) {
+        console.error('Failed to read music library:', e)
+        return []
+    }
 })
 

@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Home as HomeIcon, History as HistoryIcon, Headphones as HeadphonesIcon, Settings as SettingsIcon, ArrowLeft as ArrowLeftIcon } from 'lucide-react'
 import UrlInput from './components/UrlInput'
 import DownloadHistory from './components/DownloadHistory'
 import PlaylistEditor from './components/PlaylistEditor'
+import MusicPlayer from './components/MusicPlayer'
 import SettingsModal, { Settings } from './components/SettingsModal'
 import { PlaylistItem } from './types'
+
+type ViewType = 'home' | 'history' | 'player'
 
 interface VideoInfo {
     id: string
@@ -37,7 +41,7 @@ function App() {
     })
 
     const [downloadState, setDownloadState] = useState<DownloadState>({ stage: 'idle', percent: 0 })
-    const [showHistory, setShowHistory] = useState(false)
+    const [activeView, setActiveView] = useState<ViewType>('home')
     const [isSettingsLoaded, setIsSettingsLoaded] = useState(false)
 
     // Load settings
@@ -430,7 +434,15 @@ function App() {
         transitionTimeoutRef.current = setTimeout(() => {
             setIsTransitioning(false)
         }, 800) // Matches CSS transition duration
-    }, [showHistory])
+    }, [activeView])
+
+    const getViewClass = () => {
+        switch (activeView) {
+            case 'history': return 'view-history'
+            case 'player': return 'view-player'
+            default: return 'view-home'
+        }
+    }
 
     return (
         <div className="app">
@@ -441,24 +453,40 @@ function App() {
                     <h1>AudRip</h1>
                 </header>
 
+
+
                 <div className="toolbar">
                     <button
-                        className="toolbar-btn"
-                        onClick={() => setShowHistory(!showHistory)}
-                        title={showHistory ? 'Back' : 'History'}
+                        className={`toolbar-btn ${activeView === 'home' ? 'active' : ''}`}
+                        onClick={() => setActiveView('home')}
+                        title="Downloads"
                     >
-                        {showHistory ? '←' : '📖'}
+                        <HomeIcon size={20} />
+                    </button>
+                    <button
+                        className={`toolbar-btn ${activeView === 'history' ? 'active' : ''}`}
+                        onClick={() => setActiveView('history')}
+                        title="History"
+                    >
+                        <HistoryIcon size={20} />
+                    </button>
+                    <button
+                        className={`toolbar-btn ${activeView === 'player' ? 'active' : ''}`}
+                        onClick={() => setActiveView('player')}
+                        title="Music Player"
+                    >
+                        <HeadphonesIcon size={20} />
                     </button>
                     <button
                         className="toolbar-btn"
                         onClick={() => setShowSettings(true)}
                         title="Settings"
                     >
-                        ⚙️
+                        <SettingsIcon size={20} />
                     </button>
                 </div>
 
-                <div className={`url-container ${showHistory ? 'hidden' : ''}`}>
+                <div className={`url-container ${activeView !== 'home' ? 'hidden' : ''}`}>
                     <UrlInput
                         onSubmit={handleUrlSubmit}
                         isLoading={isLoading}
@@ -468,13 +496,17 @@ function App() {
             </div>
 
             <main className={`app-main ${isTransitioning ? 'transitioning' : ''}`}>
-                <div className={`view-container ${showHistory ? 'view-history' : 'view-home'}`}>
+                <div className={`view-container ${getViewClass()}`}>
                     <div className="view-pane history-pane-wrapper">
-                        <DownloadHistory isActive={showHistory} />
+                        <DownloadHistory isActive={activeView === 'history'} />
+                    </div>
+
+                    <div className="view-pane player-pane-wrapper">
+                        <MusicPlayer isActive={activeView === 'player'} />
                     </div>
 
                     <div className="view-pane home-pane-wrapper">
-                        <div className="queue-area">
+                        <div className={`queue-area ${playlistItems.length === 0 ? 'empty-queue' : ''}`}>
                             <PlaylistEditor
                                 items={playlistItems}
                                 onUpdateItem={handleUpdatePlaylistItem}

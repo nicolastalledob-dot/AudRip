@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { ArrowDown } from 'lucide-react'
 import AudioTrimmer from './AudioTrimmer'
 import { PlaylistItem } from '../types'
 import '../styles/index.css';
@@ -144,10 +145,10 @@ function PlaylistEditor({ items, onUpdateItem, onRemoveItem, onClearItems, onCle
                     <div className="history-empty-card">
                         <div className="empty-content">
                             <div className="empty-icon-wrapper">
-                                <span className="empty-icon-main">🎵</span>
+                                <ArrowDown size={48} className="empty-icon-animated" />
                             </div>
-                            <h3>Your queue is empty</h3>
-                            <p>Paste a YouTube link above to start downloading.</p>
+                            <h3>Your Queue is Empty</h3>
+                            <p>Paste a link above to start downloading.</p>
                         </div>
                     </div>
                 ) : (

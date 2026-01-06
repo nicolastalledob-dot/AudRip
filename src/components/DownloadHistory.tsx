@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { History } from 'lucide-react'
 
 interface HistoryItem {
     id: string
@@ -109,9 +110,9 @@ function DownloadHistory({ isActive }: DownloadHistoryProps) {
                     <div className="history-empty-card">
                         <div className="empty-content">
                             <div className="empty-icon-wrapper">
-                                <span className="empty-icon-main">📂</span>
+                                <History size={48} className="empty-icon-animated" />
                             </div>
-                            <h3>Your history is empty</h3>
+                            <h3>Your History is Empty</h3>
                             <p>Download some music to see your history here.</p>
                         </div>
                     </div>

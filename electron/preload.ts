@@ -135,7 +135,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('process-album-art', options),
 
     cancelDownload: (id: string): Promise<void> =>
-        ipcRenderer.invoke('cancel-download', id)
+        ipcRenderer.invoke('cancel-download', id),
+
+    getMusicLibrary: (): Promise<{
+        path: string
+        title: string
+        artist: string
+        album: string
+        duration: number
+        coverArt: string | null
+    }[]> => ipcRenderer.invoke('get-music-library')
 })
 
 // Type declaration for window.electronAPI
@@ -157,6 +166,15 @@ declare global {
             selectImage: () => Promise<string | null>
             processAlbumArt: (options: { imageData: string, aspectRatio: '1:1' | '16:9', size?: number }) => Promise<string>
             cancelDownload: (id: string) => Promise<void>
+            extractFrames: (url: string, count?: number) => Promise<string[]>
+            getMusicLibrary: () => Promise<{
+                path: string
+                title: string
+                artist: string
+                album: string
+                duration: number
+                coverArt: string | null
+            }[]>
         }
     }
 }
