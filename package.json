@@ -30,9 +30,18 @@
     "vite-plugin-electron-renderer": "^0.14.6",
     "wait-on": "^8.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nmtb97/AudRip.git"
+  },
   "build": {
     "appId": "com.audrip.app",
     "productName": "AudRip",
+    "publish": {
+      "provider": "github",
+      "owner": "nmtb97",
+      "repo": "AudRip"
+    },
     "directories": {
       "output": "release"
     },
