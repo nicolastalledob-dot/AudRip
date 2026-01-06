@@ -13,10 +13,11 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: BrowserWindow | null = null
 
-// Get the path to bundled binaries
+// Get the path to bundled binaries with extensive path checking for Windows compatibility
 function getBinaryPath(name: string): string {
     const isDev = !app.isPackaged
     const osFolder = platform() === 'darwin' ? 'mac' : 'win'
+    const isWindows = platform() === 'win32'
 
     // Possible paths to check (in order of priority)
     const possiblePaths: string[] = []
@@ -24,30 +25,103 @@ function getBinaryPath(name: string): string {
     if (isDev) {
         // Development mode - binaries are in bin/mac or bin/win
         possiblePaths.push(join(__dirname, '..', 'bin', osFolder, name))
+        possiblePaths.push(join(process.cwd(), 'bin', osFolder, name))
     } else {
-        // Production mode - electron-builder copies to resources/bin
+        // Production mode - multiple possible locations depending on how electron-builder packages
+
+        // 1. Standard extraResources location (resources/bin/)
         possiblePaths.push(join(process.resourcesPath, 'bin', name))
-        // Also check app.asar.unpacked path (some builds unpack resources there)
+
+        // 2. With OS subfolder (resources/bin/win/ or resources/bin/mac/)
+        possiblePaths.push(join(process.resourcesPath, 'bin', osFolder, name))
+
+        // 3. Unpacked asar location
+        possiblePaths.push(join(process.resourcesPath, 'app.asar.unpacked', 'bin', name))
         possiblePaths.push(join(process.resourcesPath, 'app.asar.unpacked', 'bin', osFolder, name))
-        // Check resources root as fallback
+
+        // 4. Directly in resources folder
         possiblePaths.push(join(process.resourcesPath, name))
+
+        // 5. Relative to the executable (Windows specific)
+        if (isWindows && process.execPath) {
+            const exeDir = join(process.execPath, '..')
+            possiblePaths.push(join(exeDir, 'resources', 'bin', name))
+            possiblePaths.push(join(exeDir, 'bin', name))
+        }
+
+        // 6. app path variations
+        const appPath = app.getAppPath()
+        possiblePaths.push(join(appPath, '..', 'bin', name))
+        possiblePaths.push(join(appPath, 'bin', osFolder, name))
     }
 
     // Find the first existing path
     for (const p of possiblePaths) {
-        if (existsSync(p)) {
-            console.log(`[getBinaryPath] Found ${name} at: ${p}`)
-            return p
+        try {
+            if (existsSync(p)) {
+                console.log(`[getBinaryPath] ✓ Found ${name} at: ${p}`)
+                return p
+            }
+        } catch (e) {
+            // Ignore access errors
         }
     }
 
     // Log all attempted paths for debugging
-    console.error(`[getBinaryPath] Binary ${name} not found! Attempted paths:`)
-    possiblePaths.forEach(p => console.error(`  - ${p} (exists: ${existsSync(p)})`))
-    console.error(`[getBinaryPath] isDev: ${isDev}, platform: ${platform()}, resourcesPath: ${process.resourcesPath}`)
+    console.error(`[getBinaryPath] ✗ Binary ${name} not found!`)
+    console.error(`[getBinaryPath] isDev: ${isDev}, platform: ${platform()}`)
+    console.error(`[getBinaryPath] resourcesPath: ${process.resourcesPath}`)
+    console.error(`[getBinaryPath] execPath: ${process.execPath}`)
+    console.error(`[getBinaryPath] appPath: ${app.getAppPath()}`)
+    console.error(`[getBinaryPath] Attempted paths:`)
+    possiblePaths.forEach(p => {
+        try {
+            console.error(`  - ${p} (exists: ${existsSync(p)})`)
+        } catch {
+            console.error(`  - ${p} (error checking)`)
+        }
+    })
 
     // Return the primary expected path (will trigger fallback to system binary)
     return isDev ? possiblePaths[0] : join(process.resourcesPath, 'bin', name)
+}
+
+// Verify required binaries exist and show user-friendly error if missing
+function verifyBinaries(): { valid: boolean, missing: string[], paths: Record<string, string> } {
+    const isWindows = platform() === 'win32'
+    const ytdlpName = isWindows ? 'yt-dlp.exe' : 'yt-dlp'
+    const ffmpegName = isWindows ? 'ffmpeg.exe' : 'ffmpeg'
+
+    const ytdlpPath = getBinaryPath(ytdlpName)
+    const ffmpegPath = getBinaryPath(ffmpegName)
+
+    const missing: string[] = []
+
+    if (!existsSync(ytdlpPath)) {
+        missing.push(`yt-dlp (expected at: ${ytdlpPath})`)
+    }
+    if (!existsSync(ffmpegPath)) {
+        missing.push(`ffmpeg (expected at: ${ffmpegPath})`)
+    }
+
+    return {
+        valid: missing.length === 0,
+        missing,
+        paths: { ytdlp: ytdlpPath, ffmpeg: ffmpegPath }
+    }
+}
+
+// Show error dialog for missing binaries
+function showBinaryError(missing: string[]): void {
+    dialog.showErrorBox(
+        'AudRip - Missing Components',
+        `The following required components are missing:\n\n${missing.join('\n')}\n\n` +
+        `This usually means the installation was incomplete or corrupted.\n\n` +
+        `Please try:\n` +
+        `1. Reinstalling AudRip\n` +
+        `2. Downloading the latest version from GitHub\n\n` +
+        `If the problem persists, please report this issue on GitHub.`
+    )
 }
 
 // Get default download directory
@@ -85,7 +159,20 @@ function createWindow() {
     }
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+    // Verify binaries exist before creating window
+    const binCheck = verifyBinaries()
+    if (!binCheck.valid) {
+        console.error('[App] Missing binaries:', binCheck.missing)
+        showBinaryError(binCheck.missing)
+        // Still create window so user can see something, but downloads won't work
+    } else {
+        console.log('[App] All binaries verified successfully')
+        console.log('[App] yt-dlp:', binCheck.paths.ytdlp)
+        console.log('[App] ffmpeg:', binCheck.paths.ffmpeg)
+    }
+    createWindow()
+})
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
