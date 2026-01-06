@@ -16,12 +16,38 @@ let mainWindow: BrowserWindow | null = null
 // Get the path to bundled binaries
 function getBinaryPath(name: string): string {
     const isDev = !app.isPackaged
-    const os = platform() === 'darwin' ? 'mac' : 'win'
+    const osFolder = platform() === 'darwin' ? 'mac' : 'win'
+
+    // Possible paths to check (in order of priority)
+    const possiblePaths: string[] = []
 
     if (isDev) {
-        return join(__dirname, '..', 'bin', os, name)
+        // Development mode - binaries are in bin/mac or bin/win
+        possiblePaths.push(join(__dirname, '..', 'bin', osFolder, name))
+    } else {
+        // Production mode - electron-builder copies to resources/bin
+        possiblePaths.push(join(process.resourcesPath, 'bin', name))
+        // Also check app.asar.unpacked path (some builds unpack resources there)
+        possiblePaths.push(join(process.resourcesPath, 'app.asar.unpacked', 'bin', osFolder, name))
+        // Check resources root as fallback
+        possiblePaths.push(join(process.resourcesPath, name))
     }
-    return join(process.resourcesPath, 'bin', name)
+
+    // Find the first existing path
+    for (const p of possiblePaths) {
+        if (existsSync(p)) {
+            console.log(`[getBinaryPath] Found ${name} at: ${p}`)
+            return p
+        }
+    }
+
+    // Log all attempted paths for debugging
+    console.error(`[getBinaryPath] Binary ${name} not found! Attempted paths:`)
+    possiblePaths.forEach(p => console.error(`  - ${p} (exists: ${existsSync(p)})`))
+    console.error(`[getBinaryPath] isDev: ${isDev}, platform: ${platform()}, resourcesPath: ${process.resourcesPath}`)
+
+    // Return the primary expected path (will trigger fallback to system binary)
+    return isDev ? possiblePaths[0] : join(process.resourcesPath, 'bin', name)
 }
 
 // Get default download directory
