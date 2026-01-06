@@ -96,23 +96,26 @@ function verifyBinaries(): { valid: boolean, missingBinaries: string[], paths: R
     const isWindows = platform() === 'win32'
     const ytdlpName = isWindows ? 'yt-dlp.exe' : 'yt-dlp'
     const ffmpegName = isWindows ? 'ffmpeg.exe' : 'ffmpeg'
+    const ffprobeName = isWindows ? 'ffprobe.exe' : 'ffprobe'
 
     const ytdlpPath = getBinaryPath(ytdlpName)
     const ffmpegPath = getBinaryPath(ffmpegName)
+    const ffprobePath = getBinaryPath(ffprobeName)
 
     const missingBinaries: string[] = []
 
     if (!existsSync(ytdlpPath)) {
         missingBinaries.push('yt-dlp')
     }
-    if (!existsSync(ffmpegPath)) {
+    // ffmpeg and ffprobe are bundled together - if one is missing, download both
+    if (!existsSync(ffmpegPath) || !existsSync(ffprobePath)) {
         missingBinaries.push('ffmpeg')
     }
 
     return {
         valid: missingBinaries.length === 0,
         missingBinaries,
-        paths: { ytdlp: ytdlpPath, ffmpeg: ffmpegPath }
+        paths: { ytdlp: ytdlpPath, ffmpeg: ffmpegPath, ffprobe: ffprobePath }
     }
 }
 
@@ -250,25 +253,38 @@ async function downloadMissingBinaries(missing: string[]): Promise<{ success: bo
                         const { execSync } = require('child_process')
                         execSync(`powershell -command "Expand-Archive -Path '${tempZip}' -DestinationPath '${binDir}' -Force"`, { stdio: 'ignore' })
 
-                        // Find and move ffmpeg.exe to bin dir
-                        const findFfmpeg = (dir: string): string | null => {
-                            const files = readdirSync(dir, { withFileTypes: true })
-                            for (const file of files) {
-                                const fullPath = join(dir, file.name)
-                                if (file.isDirectory()) {
-                                    const found = findFfmpeg(fullPath)
-                                    if (found) return found
-                                } else if (file.name === 'ffmpeg.exe') {
-                                    return fullPath
+                        // Find ffmpeg.exe and ffprobe.exe in extracted files
+                        const findBinary = (dir: string, targetName: string): string | null => {
+                            try {
+                                const files = readdirSync(dir, { withFileTypes: true })
+                                for (const file of files) {
+                                    const fullPath = join(dir, file.name)
+                                    if (file.isDirectory()) {
+                                        const found = findBinary(fullPath, targetName)
+                                        if (found) return found
+                                    } else if (file.name === targetName) {
+                                        return fullPath
+                                    }
                                 }
-                            }
+                            } catch { }
                             return null
                         }
 
-                        const ffmpegExe = findFfmpeg(binDir)
+                        const { copyFileSync } = require('fs')
+
+                        // Copy ffmpeg.exe
+                        const ffmpegExe = findBinary(binDir, 'ffmpeg.exe')
                         if (ffmpegExe && ffmpegExe !== destPath) {
-                            const { copyFileSync } = require('fs')
                             copyFileSync(ffmpegExe, destPath)
+                            console.log(`[AutoInstall] Copied ffmpeg.exe to ${destPath}`)
+                        }
+
+                        // Also copy ffprobe.exe (needed for audio player)
+                        const ffprobeExe = findBinary(binDir, 'ffprobe.exe')
+                        const ffprobeDest = join(binDir, 'ffprobe.exe')
+                        if (ffprobeExe && ffprobeExe !== ffprobeDest) {
+                            copyFileSync(ffprobeExe, ffprobeDest)
+                            console.log(`[AutoInstall] Copied ffprobe.exe to ${ffprobeDest}`)
                         }
 
                         downloaded.push(binary)
