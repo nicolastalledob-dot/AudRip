@@ -58,6 +58,13 @@
         "zip"
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AudRip"
+    },
     "win": {
       "icon": "build/icon_win.png",
       "publisherName": "AudRip",
