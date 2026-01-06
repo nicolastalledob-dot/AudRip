@@ -10,6 +10,22 @@ Una aplicación de escritorio para descargar audio de **YouTube** y **SoundCloud
 
 <img width="480" height="405" alt="Screenshot 2026-01-05 at 4 48 01 PM" src="https://github.com/user-attachments/assets/bf3eaea1-5be6-4806-8fe0-c424e38739c8" />
 
+## 📥 Instalación
+
+### macOS
+1. Descarga `AudRip-X.X.X-arm64.dmg` desde [Releases](https://github.com/nmtb97/AudRip/releases)
+2. Abre el DMG y arrastra AudRip a Aplicaciones
+3. Si aparece **"AudRip está dañado y no se puede abrir"**, ejecuta en Terminal:
+   ```bash
+   xattr -cr /Applications/AudRip.app
+   ```
+4. Abre AudRip de nuevo
+
+### Windows
+1. Descarga `AudRip Setup X.X.X.exe` desde [Releases](https://github.com/nmtb97/AudRip/releases)
+2. Ejecuta el instalador
+3. Al abrir por primera vez, acepta descargar los componentes requeridos (~100MB)
+
 ## ✨ Características
 
 ### Plataformas Soportadas
