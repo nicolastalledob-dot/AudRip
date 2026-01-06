@@ -441,15 +441,44 @@ app.on('window-all-closed', () => {
     }
 })
 
-// Register media protocol for local file access
+// Register media protocol for local file access with proper CORS headers
 app.whenReady().then(() => {
     const { protocol } = require('electron')
-    protocol.registerFileProtocol('media', (request, callback) => {
+
+    protocol.handle('media', async (request: { url: string }) => {
         const url = request.url.replace('media://', '')
+        const filePath = decodeURIComponent(url)
+
         try {
-            return callback(decodeURIComponent(url))
+            // Determine MIME type based on extension
+            const ext = filePath.toLowerCase().slice(filePath.lastIndexOf('.'))
+            const mimeTypes: Record<string, string> = {
+                '.mp3': 'audio/mpeg',
+                '.m4a': 'audio/mp4',
+                '.aac': 'audio/aac',
+                '.ogg': 'audio/ogg',
+                '.flac': 'audio/flac',
+                '.wav': 'audio/wav',
+                '.webm': 'audio/webm'
+            }
+            const mimeType = mimeTypes[ext] || 'audio/mpeg'
+
+            // Read file and return as Response with CORS headers
+            const fileBuffer = readFileSync(filePath)
+
+            return new Response(fileBuffer, {
+                status: 200,
+                headers: {
+                    'Content-Type': mimeType,
+                    'Content-Length': fileBuffer.length.toString(),
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                    'Access-Control-Allow-Headers': '*'
+                }
+            })
         } catch (error) {
-            console.error(error)
+            console.error('[Media Protocol] Error loading file:', error)
+            return new Response('File not found', { status: 404 })
         }
     })
 })
