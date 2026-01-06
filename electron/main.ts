@@ -29,6 +29,11 @@ function getBinaryPath(name: string): string {
     } else {
         // Production mode - multiple possible locations depending on how electron-builder packages
 
+        // 0. FIRST: Check user data directory (where auto-downloaded binaries are stored)
+        // This takes priority so that downloaded binaries are found first
+        const userBinDir = join(app.getPath('userData'), 'bin')
+        possiblePaths.push(join(userBinDir, name))
+
         // 1. Standard extraResources location (resources/bin/)
         possiblePaths.push(join(process.resourcesPath, 'bin', name))
 
@@ -86,8 +91,8 @@ function getBinaryPath(name: string): string {
     return isDev ? possiblePaths[0] : join(process.resourcesPath, 'bin', name)
 }
 
-// Verify required binaries exist and show user-friendly error if missing
-function verifyBinaries(): { valid: boolean, missing: string[], paths: Record<string, string> } {
+// Verify required binaries exist and return info about missing ones
+function verifyBinaries(): { valid: boolean, missingBinaries: string[], paths: Record<string, string> } {
     const isWindows = platform() === 'win32'
     const ytdlpName = isWindows ? 'yt-dlp.exe' : 'yt-dlp'
     const ffmpegName = isWindows ? 'ffmpeg.exe' : 'ffmpeg'
@@ -95,33 +100,266 @@ function verifyBinaries(): { valid: boolean, missing: string[], paths: Record<st
     const ytdlpPath = getBinaryPath(ytdlpName)
     const ffmpegPath = getBinaryPath(ffmpegName)
 
-    const missing: string[] = []
+    const missingBinaries: string[] = []
 
     if (!existsSync(ytdlpPath)) {
-        missing.push(`yt-dlp (expected at: ${ytdlpPath})`)
+        missingBinaries.push('yt-dlp')
     }
     if (!existsSync(ffmpegPath)) {
-        missing.push(`ffmpeg (expected at: ${ffmpegPath})`)
+        missingBinaries.push('ffmpeg')
     }
 
     return {
-        valid: missing.length === 0,
-        missing,
+        valid: missingBinaries.length === 0,
+        missingBinaries,
         paths: { ytdlp: ytdlpPath, ffmpeg: ffmpegPath }
     }
 }
 
-// Show error dialog for missing binaries
-function showBinaryError(missing: string[]): void {
-    dialog.showErrorBox(
-        'AudRip - Missing Components',
-        `The following required components are missing:\n\n${missing.join('\n')}\n\n` +
-        `This usually means the installation was incomplete or corrupted.\n\n` +
-        `Please try:\n` +
-        `1. Reinstalling AudRip\n` +
-        `2. Downloading the latest version from GitHub\n\n` +
-        `If the problem persists, please report this issue on GitHub.`
-    )
+// Get the user data bin directory (writable location for downloaded binaries)
+function getUserBinDir(): string {
+    const dir = join(app.getPath('userData'), 'bin')
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+    }
+    return dir
+}
+
+// Download a file from URL to destination
+async function downloadFile(url: string, dest: string, onProgress?: (percent: number) => void): Promise<boolean> {
+    return new Promise((resolve) => {
+        console.log(`[Download] Starting download: ${url}`)
+        const request = net.request(url)
+
+        request.on('response', (response) => {
+            // Handle redirects
+            if (response.statusCode === 302 || response.statusCode === 301) {
+                const redirectUrl = response.headers.location
+                if (redirectUrl && typeof redirectUrl === 'string') {
+                    console.log(`[Download] Redirecting to: ${redirectUrl}`)
+                    downloadFile(redirectUrl, dest, onProgress).then(resolve)
+                    return
+                } else if (Array.isArray(redirectUrl) && redirectUrl[0]) {
+                    console.log(`[Download] Redirecting to: ${redirectUrl[0]}`)
+                    downloadFile(redirectUrl[0], dest, onProgress).then(resolve)
+                    return
+                }
+            }
+
+            if (response.statusCode !== 200) {
+                console.error(`[Download] Failed with status: ${response.statusCode}`)
+                resolve(false)
+                return
+            }
+
+            const totalSize = parseInt(response.headers['content-length'] as string || '0', 10)
+            let downloadedSize = 0
+            const chunks: Buffer[] = []
+
+            response.on('data', (chunk) => {
+                chunks.push(chunk)
+                downloadedSize += chunk.length
+                if (totalSize > 0 && onProgress) {
+                    onProgress(Math.round((downloadedSize / totalSize) * 100))
+                }
+            })
+
+            response.on('end', () => {
+                try {
+                    const buffer = Buffer.concat(chunks)
+                    writeFileSync(dest, buffer)
+                    // Make executable on Unix
+                    if (platform() !== 'win32') {
+                        const { chmodSync } = require('fs')
+                        chmodSync(dest, 0o755)
+                    }
+                    console.log(`[Download] Saved to: ${dest}`)
+                    resolve(true)
+                } catch (e) {
+                    console.error(`[Download] Failed to save:`, e)
+                    resolve(false)
+                }
+            })
+        })
+
+        request.on('error', (error) => {
+            console.error(`[Download] Error:`, error)
+            resolve(false)
+        })
+
+        request.end()
+    })
+}
+
+// Download missing binaries automatically
+async function downloadMissingBinaries(missing: string[]): Promise<{ success: boolean, downloaded: string[], failed: string[] }> {
+    const isWindows = platform() === 'win32'
+    const binDir = getUserBinDir()
+
+    const downloaded: string[] = []
+    const failed: string[] = []
+
+    // Binary download URLs
+    const urls: Record<string, { url: string, filename: string }> = {
+        'yt-dlp': {
+            url: isWindows
+                ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+                : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos',
+            filename: isWindows ? 'yt-dlp.exe' : 'yt-dlp'
+        },
+        'ffmpeg': {
+            url: isWindows
+                ? 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+                : 'https://evermeet.cx/ffmpeg/getrelease/zip',
+            filename: isWindows ? 'ffmpeg.exe' : 'ffmpeg'
+        }
+    }
+
+    for (const binary of missing) {
+        const info = urls[binary]
+        if (!info) continue
+
+        const destPath = join(binDir, info.filename)
+        console.log(`[AutoInstall] Downloading ${binary}...`)
+
+        // Show progress in a window
+        if (mainWindow) {
+            mainWindow.webContents.send('binary-download-progress', {
+                binary,
+                status: 'downloading',
+                percent: 0
+            })
+        }
+
+        // For ffmpeg, we need to handle ZIP extraction
+        if (binary === 'ffmpeg') {
+            // Download to temp zip first
+            const tempZip = join(binDir, 'ffmpeg-temp.zip')
+            const success = await downloadFile(info.url, tempZip, (percent) => {
+                if (mainWindow) {
+                    mainWindow.webContents.send('binary-download-progress', { binary, status: 'downloading', percent })
+                }
+            })
+
+            if (success) {
+                try {
+                    // Extract ffmpeg from zip using unzipper or manual extraction
+                    // For simplicity, we'll use a spawned process
+                    if (isWindows) {
+                        // On Windows, use PowerShell to extract
+                        const { execSync } = require('child_process')
+                        execSync(`powershell -command "Expand-Archive -Path '${tempZip}' -DestinationPath '${binDir}' -Force"`, { stdio: 'ignore' })
+
+                        // Find and move ffmpeg.exe to bin dir
+                        const findFfmpeg = (dir: string): string | null => {
+                            const files = readdirSync(dir, { withFileTypes: true })
+                            for (const file of files) {
+                                const fullPath = join(dir, file.name)
+                                if (file.isDirectory()) {
+                                    const found = findFfmpeg(fullPath)
+                                    if (found) return found
+                                } else if (file.name === 'ffmpeg.exe') {
+                                    return fullPath
+                                }
+                            }
+                            return null
+                        }
+
+                        const ffmpegExe = findFfmpeg(binDir)
+                        if (ffmpegExe && ffmpegExe !== destPath) {
+                            const { copyFileSync } = require('fs')
+                            copyFileSync(ffmpegExe, destPath)
+                        }
+
+                        downloaded.push(binary)
+                    } else {
+                        // On macOS, use unzip
+                        const { execSync } = require('child_process')
+                        execSync(`unzip -o "${tempZip}" -d "${binDir}"`, { stdio: 'ignore' })
+                        downloaded.push(binary)
+                    }
+
+                    // Cleanup temp zip
+                    try { unlinkSync(tempZip) } catch { }
+                } catch (e) {
+                    console.error(`[AutoInstall] Failed to extract ffmpeg:`, e)
+                    failed.push(binary)
+                }
+            } else {
+                failed.push(binary)
+            }
+        } else {
+            // Direct download for yt-dlp
+            const success = await downloadFile(info.url, destPath, (percent) => {
+                if (mainWindow) {
+                    mainWindow.webContents.send('binary-download-progress', { binary, status: 'downloading', percent })
+                }
+            })
+
+            if (success) {
+                downloaded.push(binary)
+            } else {
+                failed.push(binary)
+            }
+        }
+
+        if (mainWindow) {
+            mainWindow.webContents.send('binary-download-progress', {
+                binary,
+                status: downloaded.includes(binary) ? 'complete' : 'failed',
+                percent: 100
+            })
+        }
+    }
+
+    return { success: failed.length === 0, downloaded, failed }
+}
+
+// Show dialog asking user if they want to download missing binaries
+async function promptAndDownloadBinaries(missing: string[]): Promise<boolean> {
+    const result = await dialog.showMessageBox(mainWindow!, {
+        type: 'question',
+        buttons: ['Download Now', 'Cancel'],
+        defaultId: 0,
+        title: 'AudRip - Components Required',
+        message: 'Some required components are missing',
+        detail: `The following components need to be downloaded:\n\n• ${missing.join('\n• ')}\n\nThis is a one-time download (about 100MB total). Would you like to download them now?`
+    })
+
+    if (result.response === 0) {
+        // Show downloading message
+        dialog.showMessageBox(mainWindow!, {
+            type: 'info',
+            buttons: [],
+            title: 'Downloading...',
+            message: 'Downloading required components',
+            detail: 'Please wait while the components are being downloaded. This may take a few minutes depending on your internet connection.'
+        })
+
+        const downloadResult = await downloadMissingBinaries(missing)
+
+        if (downloadResult.success) {
+            await dialog.showMessageBox(mainWindow!, {
+                type: 'info',
+                buttons: ['OK'],
+                title: 'Download Complete',
+                message: 'All components downloaded successfully!',
+                detail: 'AudRip is now ready to use.'
+            })
+            return true
+        } else {
+            await dialog.showMessageBox(mainWindow!, {
+                type: 'error',
+                buttons: ['OK'],
+                title: 'Download Failed',
+                message: 'Some components failed to download',
+                detail: `Failed: ${downloadResult.failed.join(', ')}\n\nPlease check your internet connection and try again.`
+            })
+            return false
+        }
+    }
+
+    return false
 }
 
 // Get default download directory
@@ -159,19 +397,26 @@ function createWindow() {
     }
 }
 
-app.whenReady().then(() => {
-    // Verify binaries exist before creating window
+app.whenReady().then(async () => {
+    // Create window first so user sees something
+    createWindow()
+
+    // Then verify binaries
     const binCheck = verifyBinaries()
     if (!binCheck.valid) {
-        console.error('[App] Missing binaries:', binCheck.missing)
-        showBinaryError(binCheck.missing)
-        // Still create window so user can see something, but downloads won't work
+        console.error('[App] Missing binaries:', binCheck.missingBinaries)
+        // Prompt user to download missing binaries
+        const downloaded = await promptAndDownloadBinaries(binCheck.missingBinaries)
+        if (downloaded) {
+            console.log('[App] Binaries downloaded successfully')
+        } else {
+            console.error('[App] User cancelled or download failed')
+        }
     } else {
         console.log('[App] All binaries verified successfully')
         console.log('[App] yt-dlp:', binCheck.paths.ytdlp)
         console.log('[App] ffmpeg:', binCheck.paths.ffmpeg)
     }
-    createWindow()
 })
 
 app.on('window-all-closed', () => {
