@@ -47,6 +47,16 @@ export interface HistoryItem {
     downloadedAt: string
 }
 
+export interface Playlist {
+    id: string
+    name: string
+    description: string
+    coverArt: string | null
+    trackPaths: string[]
+    createdAt: number
+    updatedAt: number
+}
+
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
     // Get video info from URL
@@ -144,7 +154,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
         album: string
         duration: number
         coverArt: string | null
-    }[]> => ipcRenderer.invoke('get-music-library')
+    }[]> => ipcRenderer.invoke('get-music-library'),
+
+    // Playlist API
+    getPlaylists: (): Promise<Playlist[]> =>
+        ipcRenderer.invoke('get-playlists'),
+
+    savePlaylist: (playlist: Playlist): Promise<{ success: boolean, playlists: Playlist[] }> =>
+        ipcRenderer.invoke('save-playlist', playlist),
+
+    deletePlaylist: (playlistId: string): Promise<{ success: boolean, playlists: Playlist[] }> =>
+        ipcRenderer.invoke('delete-playlist', playlistId),
+
+    addTrackToPlaylist: (playlistId: string, trackPath: string): Promise<{ success: boolean, playlist?: Playlist, error?: string }> =>
+        ipcRenderer.invoke('add-track-to-playlist', playlistId, trackPath),
+
+    removeTrackFromPlaylist: (playlistId: string, trackPath: string): Promise<{ success: boolean, playlist?: Playlist, error?: string }> =>
+        ipcRenderer.invoke('remove-track-from-playlist', playlistId, trackPath)
 })
 
 // Type declaration for window.electronAPI
@@ -175,6 +201,11 @@ declare global {
                 duration: number
                 coverArt: string | null
             }[]>
+            getPlaylists: () => Promise<Playlist[]>
+            savePlaylist: (playlist: Playlist) => Promise<{ success: boolean, playlists: Playlist[] }>
+            deletePlaylist: (playlistId: string) => Promise<{ success: boolean, playlists: Playlist[] }>
+            addTrackToPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
+            removeTrackFromPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
         }
     }
 }

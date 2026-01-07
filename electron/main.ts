@@ -446,10 +446,51 @@ app.whenReady().then(() => {
     const { protocol } = require('electron')
 
     protocol.handle('media', async (request: { url: string }) => {
-        const url = request.url.replace('media://', '')
-        const filePath = decodeURIComponent(url)
+        // Use URL parsing to correctly extract the path
+        // media:///Users/path = URL with empty host and path /Users/path
+        // media://C:/path = URL with host "C" and path /path (Windows quirk)
+        let filePath: string
 
         try {
+            const url = new URL(request.url)
+            // For file-like URLs, the pathname is what we need
+            // But we also need to check hostname for Windows drive letters
+            if (url.hostname && /^[a-zA-Z]$/.test(url.hostname)) {
+                // Windows path: hostname is drive letter, pathname is the rest
+                filePath = `${url.hostname.toUpperCase()}:${url.pathname}`
+            } else if (url.hostname) {
+                // Host was incorrectly parsed as first path component
+                filePath = `/${url.hostname}${url.pathname}`
+            } else {
+                // Normal case: just use pathname
+                filePath = url.pathname
+            }
+        } catch (e) {
+            // Fallback: manual parsing
+            filePath = request.url.replace(/^media:\/\//, '')
+            if (filePath.startsWith('/')) {
+                // Already correct
+            }
+        }
+
+        filePath = decodeURIComponent(filePath)
+
+        // Windows path fix: Convert forward slashes to backslashes for Windows paths
+        if (platform() === 'win32') {
+            if (/^[a-zA-Z]:/.test(filePath)) {
+                filePath = filePath.replace(/\//g, '\\')
+            }
+        }
+
+        console.log('[Media Protocol] Request URL:', request.url)
+        console.log('[Media Protocol] Resolved path:', filePath)
+
+        try {
+            if (!existsSync(filePath)) {
+                console.error('[Media Protocol] File does not exist:', filePath)
+                return new Response('File not found', { status: 404 })
+            }
+
             // Determine MIME type based on extension
             const ext = filePath.toLowerCase().slice(filePath.lastIndexOf('.'))
             const mimeTypes: Record<string, string> = {
@@ -465,6 +506,7 @@ app.whenReady().then(() => {
 
             // Read file and return as Response with CORS headers
             const fileBuffer = readFileSync(filePath)
+            console.log('[Media Protocol] Serving file:', filePath, 'Size:', fileBuffer.length, 'Type:', mimeType)
 
             return new Response(fileBuffer, {
                 status: 200,
@@ -473,11 +515,12 @@ app.whenReady().then(() => {
                     'Content-Length': fileBuffer.length.toString(),
                     'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Methods': 'GET, OPTIONS',
-                    'Access-Control-Allow-Headers': '*'
+                    'Access-Control-Allow-Headers': '*',
+                    'Accept-Ranges': 'bytes'
                 }
             })
         } catch (error) {
-            console.error('[Media Protocol] Error loading file:', error)
+            console.error('[Media Protocol] Error loading file:', filePath, error)
             return new Response('File not found', { status: 404 })
         }
     })
@@ -1417,3 +1460,106 @@ ipcMain.handle('get-music-library', async () => {
     }
 })
 
+// ===== PLAYLIST MANAGEMENT =====
+
+interface Playlist {
+    id: string
+    name: string
+    description: string
+    coverArt: string | null  // base64 data URL or null
+    trackPaths: string[]
+    createdAt: number
+    updatedAt: number
+}
+
+function getPlaylistsFilePath(): string {
+    return join(app.getPath('userData'), 'playlists.json')
+}
+
+function loadPlaylists(): Playlist[] {
+    const filePath = getPlaylistsFilePath()
+    try {
+        if (existsSync(filePath)) {
+            const data = readFileSync(filePath, 'utf-8')
+            return JSON.parse(data)
+        }
+    } catch (e) {
+        console.error('[Playlists] Failed to load:', e)
+    }
+    return []
+}
+
+function savePlaylists(playlists: Playlist[]): boolean {
+    const filePath = getPlaylistsFilePath()
+    try {
+        writeFileSync(filePath, JSON.stringify(playlists, null, 2))
+        return true
+    } catch (e) {
+        console.error('[Playlists] Failed to save:', e)
+        return false
+    }
+}
+
+// Get all playlists
+ipcMain.handle('get-playlists', async () => {
+    return loadPlaylists()
+})
+
+// Save (create or update) a playlist
+ipcMain.handle('save-playlist', async (_event, playlist: Playlist) => {
+    const playlists = loadPlaylists()
+    const existingIndex = playlists.findIndex(p => p.id === playlist.id)
+
+    if (existingIndex >= 0) {
+        // Update existing
+        playlists[existingIndex] = { ...playlist, updatedAt: Date.now() }
+    } else {
+        // Create new
+        playlists.push({ ...playlist, createdAt: Date.now(), updatedAt: Date.now() })
+    }
+
+    const success = savePlaylists(playlists)
+    return { success, playlists }
+})
+
+// Delete a playlist
+ipcMain.handle('delete-playlist', async (_event, playlistId: string) => {
+    const playlists = loadPlaylists()
+    const filtered = playlists.filter(p => p.id !== playlistId)
+    const success = savePlaylists(filtered)
+    return { success, playlists: filtered }
+})
+
+// Add a track to a playlist
+ipcMain.handle('add-track-to-playlist', async (_event, playlistId: string, trackPath: string) => {
+    const playlists = loadPlaylists()
+    const playlist = playlists.find(p => p.id === playlistId)
+
+    if (!playlist) {
+        return { success: false, error: 'Playlist not found' }
+    }
+
+    if (!playlist.trackPaths.includes(trackPath)) {
+        playlist.trackPaths.push(trackPath)
+        playlist.updatedAt = Date.now()
+        const success = savePlaylists(playlists)
+        return { success, playlist }
+    }
+
+    return { success: true, playlist } // Already exists
+})
+
+// Remove a track from a playlist
+ipcMain.handle('remove-track-from-playlist', async (_event, playlistId: string, trackPath: string) => {
+    const playlists = loadPlaylists()
+    const playlist = playlists.find(p => p.id === playlistId)
+
+    if (!playlist) {
+        return { success: false, error: 'Playlist not found' }
+    }
+
+    playlist.trackPaths = playlist.trackPaths.filter(p => p !== trackPath)
+    playlist.updatedAt = Date.now()
+    const success = savePlaylists(playlists)
+    return { success, playlist }
+})

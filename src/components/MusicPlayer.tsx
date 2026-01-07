@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon } from 'lucide-react'
+import { createPortal } from 'react-dom'
+
+// ... existing imports ...
+import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon, MoreHorizontal as MoreIcon, ListMusic as PlaylistIcon, Plus as PlusIcon, X as CloseIcon, ArrowLeft as BackIcon, Trash2 as TrashIcon, Upload as UploadIcon, Edit2 as EditIcon, Shuffle as ShuffleIcon, Repeat as RepeatIcon, Repeat1 as Repeat1Icon } from 'lucide-react'
 
 interface Track {
     path: string
@@ -8,6 +11,16 @@ interface Track {
     album: string
     coverArt: string | null
     duration: number
+}
+
+interface Playlist {
+    id: string
+    name: string
+    description: string
+    coverArt: string | null
+    trackPaths: string[]
+    createdAt: number
+    updatedAt: number
 }
 
 interface MusicPlayerProps {
@@ -37,7 +50,7 @@ const MarqueeText = ({ text }: { text: string }) => {
     }, [text])
 
     return (
-        <div className="header-title-wrapper" ref={containerRef}>
+        <div className={`header-title-wrapper ${shouldAnimate ? 'mask-enabled' : ''}`} ref={containerRef}>
             <div className={`marquee-track ${shouldAnimate ? 'animate' : ''}`} ref={textRef}>
                 <h2 className="header-title">{text}</h2>
                 {shouldAnimate && <h2 className="header-title" aria-hidden="true">{text}</h2>}
@@ -55,6 +68,26 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     const [volume, setVolume] = useState(1)
     const [isLoading, setIsLoading] = useState(true)
     const [searchTerm, setSearchTerm] = useState('')
+
+    // --- PLAYLIST STATE ---
+    const [playlists, setPlaylists] = useState<Playlist[]>([])
+
+    const [showPlaylistBrowser, setShowPlaylistBrowser] = useState(false)
+    const [activePlaylist, setActivePlaylist] = useState<Playlist | null>(null)
+    const [showPlaylistModal, setShowPlaylistModal] = useState(false)
+    const [trackToAddToPlaylist, setTrackToAddToPlaylist] = useState<Track | null>(null)
+    const [trackMenuOpen, setTrackMenuOpen] = useState<string | null>(null) // track path
+    const [menuPosition, setMenuPosition] = useState<{ x: number, y: number } | null>(null)
+    const [isClosingBrowser, setIsClosingBrowser] = useState(false)
+    const [newPlaylistImage, setNewPlaylistImage] = useState<string | null>(null)
+    const [editingPlaylist, setEditingPlaylist] = useState<Playlist | null>(null)
+    const [isDraggingImage, setIsDraggingImage] = useState(false)
+    const [isScrubbing, setIsScrubbing] = useState(false)
+    const [scrubTime, setScrubTime] = useState(0)
+    // --- PLAYBACK CONTROL STATE ---
+    const [isShuffle, setIsShuffle] = useState(false)
+    const [repeatMode, setRepeatMode] = useState<'off' | 'all' | 'one'>('all')
+
 
     // --- AUDIO EFFECTS STATE ---
     const [showFx, setShowFx] = useState(false)
@@ -75,7 +108,15 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         }, 200)
     }
 
-    const filteredTracks = tracks.filter(track =>
+    // Get tracks for current view (all library or active playlist)
+    const getDisplayTracks = useCallback(() => {
+        if (activePlaylist) {
+            return tracks.filter(t => activePlaylist.trackPaths.includes(t.path))
+        }
+        return tracks
+    }, [tracks, activePlaylist])
+
+    const filteredTracks = getDisplayTracks().filter(track =>
         track.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
         track.artist.toLowerCase().includes(searchTerm.toLowerCase())
     )
@@ -348,9 +389,133 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         }
     }, [currentTrackIndex])
 
+    // Load playlists
+    const loadPlaylists = useCallback(async () => {
+        try {
+            // @ts-ignore
+            const loadedPlaylists = await (window.electronAPI as any).getPlaylists()
+            setPlaylists(loadedPlaylists)
+        } catch (error) {
+            console.error('Failed to load playlists:', error)
+        }
+    }, [])
+
+    // Add track to playlist
+    const handleAddToPlaylist = async (trackPath: string, playlistId: string) => {
+        try {
+            // @ts-ignore
+            const result = await (window.electronAPI as any).addTrackToPlaylist(playlistId, trackPath)
+            if (result.success) {
+                await loadPlaylists() // Refresh playlists
+            }
+        } catch (error) {
+            console.error('Failed to add track to playlist:', error)
+        }
+        setTrackMenuOpen(null)
+
+    }
+
+    // Save playlist (create or update)
+    const handleSavePlaylist = async (name: string, description: string, coverArt: string | null) => {
+        try {
+            if (editingPlaylist) {
+                const updatedPlaylist: Playlist = {
+                    ...editingPlaylist,
+                    name,
+                    description,
+                    coverArt,
+                    updatedAt: Date.now()
+                }
+                // @ts-ignore
+                const result = await (window.electronAPI as any).savePlaylist(updatedPlaylist)
+                if (result.success) {
+                    setPlaylists(result.playlists)
+                    if (activePlaylist?.id === updatedPlaylist.id) {
+                        setActivePlaylist(updatedPlaylist)
+                    }
+                }
+            } else {
+                const newPlaylist: Playlist = {
+                    id: Date.now().toString() + Math.random().toString(36).slice(2),
+                    name,
+                    description,
+                    coverArt,
+                    trackPaths: trackToAddToPlaylist ? [trackToAddToPlaylist.path] : [],
+                    createdAt: Date.now(),
+                    updatedAt: Date.now()
+                }
+                // @ts-ignore
+                const result = await (window.electronAPI as any).savePlaylist(newPlaylist)
+                if (result.success) {
+                    setPlaylists(result.playlists)
+                    if (trackToAddToPlaylist) {
+                        setTrackToAddToPlaylist(null)
+                        setShowPlaylistBrowser(false)
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Failed to save playlist:', error)
+        }
+        setShowPlaylistModal(false)
+        setEditingPlaylist(null)
+        setNewPlaylistImage(null)
+        setIsDraggingImage(false)
+    }
+
+    // Delete playlist
+    const handleDeletePlaylist = async (playlistId: string) => {
+        try {
+            // @ts-ignore
+            const result = await (window.electronAPI as any).deletePlaylist(playlistId)
+            if (result.success) {
+                setPlaylists(result.playlists)
+                if (activePlaylist?.id === playlistId) {
+                    setActivePlaylist(null)
+                }
+            }
+        } catch (error) {
+            console.error('Failed to delete playlist:', error)
+        }
+    }
+
+    // Helper to close browser with animation
+    const closePlaylistBrowser = () => {
+        setIsClosingBrowser(true)
+        setTimeout(() => {
+            setShowPlaylistBrowser(false)
+            setIsClosingBrowser(false)
+            setTrackToAddToPlaylist(null)
+        }, 200)
+    }
+
+
+
     useEffect(() => {
-        if (isActive) loadTracks()
+        if (isActive) {
+            loadTracks()
+            loadPlaylists()
+        }
     }, [isActive])
+
+
+
+    // Close menu when clicking outside
+    useEffect(() => {
+        if (!trackMenuOpen) return
+        const handleClickOutside = () => {
+            setTrackMenuOpen(null)
+
+        }
+        // Delay to avoid immediate closing
+        const timeout = setTimeout(() => {
+            document.addEventListener('click', handleClickOutside)
+        }, 0)
+        return () => {
+            clearTimeout(timeout)
+            document.removeEventListener('click', handleClickOutside)
+        }
+    }, [trackMenuOpen])
 
     // Audio Elements Events
     useEffect(() => {
@@ -360,28 +525,26 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         // Connect audio element immediately if strict context needed, but usually on play is fine.
 
         audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime))
-        audio.addEventListener('loadedmetadata', () => setDuration(audio.duration))
+        audio.addEventListener('loadedmetadata', () => {
+            console.log('[Audio] Metadata loaded, duration:', audio.duration)
+            setDuration(audio.duration)
+        })
         audio.addEventListener('play', () => setIsPlaying(true))
         audio.addEventListener('pause', () => setIsPlaying(false))
-
-        // Handle Auto Next
-        const handleEnded = () => {
-            setTracks(currentTracks => {
-                setCurrentTrackIndex(idx => {
-                    if (currentTracks.length === 0) return -1
-                    return (idx + 1) % currentTracks.length
-                })
-                return currentTracks
-            })
-        }
-        audio.addEventListener('ended', handleEnded)
+        audio.addEventListener('error', () => {
+            console.error('[Audio] Error loading audio:', audio.error?.message, audio.error?.code, audio.src)
+        })
+        audio.addEventListener('canplay', () => {
+            console.log('[Audio] Can play:', audio.src)
+        })
 
         return () => {
             audio.pause()
-            audio.removeEventListener('ended', handleEnded)
             audio.src = ''
         }
     }, [])
+
+
 
     // Load Source when track changes
     useEffect(() => {
@@ -389,7 +552,12 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
             if (currentAudioPathRef.current === currentTrack.path) return
 
             const audio = audioRef.current
-            audio.src = `media://${currentTrack.path}`
+            // URL format: media:// + path
+            // For Unix paths: media:// + /Users/... = media:///Users/... (3 slashes = no host)
+            // For Windows paths: media:// + C:/... = media://C:/... (drive letter as "host")
+            const mediaUrl = `media://${currentTrack.path}`
+            console.log('[Audio] Loading:', mediaUrl)
+            audio.src = mediaUrl
             currentAudioPathRef.current = currentTrack.path
             audio.load()
 
@@ -408,35 +576,257 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     }, [volume])
 
 
-    const handlePlayPause = () => {
+    // Sync Loop Attribute
+    useEffect(() => {
+        if (audioRef.current) {
+            audioRef.current.loop = (repeatMode === 'one')
+        }
+    }, [repeatMode])
+
+    // Sync Audio Props on Load
+    useEffect(() => {
+        if (audioRef.current) {
+            audioRef.current.loop = (repeatMode === 'one')
+        }
+    }, [currentTrack])
+
+    const handlePlayPause = useCallback(() => {
         if (!audioRef.current || !currentTrack) return
         if (audioContextRef.current?.state === 'suspended') {
             audioContextRef.current.resume()
         }
         if (isPlaying) audioRef.current.pause()
         else audioRef.current.play().catch(console.error)
-    }
+    }, [currentTrack, isPlaying])
 
-    const handleNext = () => {
-        setTracks(currentTracks => {
-            setCurrentTrackIndex(idx => (idx + 1) % currentTracks.length)
-            return currentTracks
-        })
-    }
+    // Global Shortcuts
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.code === 'Space') {
+                const activeTag = document.activeElement?.tagName.toLowerCase()
+                if (activeTag === 'input' || activeTag === 'textarea') return
 
-    const handlePrevious = () => {
-        if (tracks.length === 0) return
+                e.preventDefault()
+                handlePlayPause()
+            }
+        }
+
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [handlePlayPause])
+
+    const handleNext = useCallback(() => {
+        const displayTracks = getDisplayTracks()
+        if (displayTracks.length === 0) return
+
+        const currentTrack = tracks[currentTrackIndex]
+        if (!currentTrack) {
+            // Start playing first
+            if (displayTracks.length > 0) {
+                const idx = tracks.findIndex(t => t.path === displayTracks[0].path)
+                if (idx !== -1) setCurrentTrackIndex(idx)
+            }
+            return
+        }
+
+        // Shuffle Logic
+        if (isShuffle) {
+            // Pick random next track
+            if (displayTracks.length <= 1) return // Can't shuffle 1 track effectively (just repeats)
+            let randomIdx
+            do {
+                randomIdx = Math.floor(Math.random() * displayTracks.length)
+            } while (displayTracks.length > 1 && displayTracks[randomIdx].path === currentTrack.path) // Avoid same track if possible
+
+            const nextTrack = displayTracks[randomIdx]
+            const globalIdx = tracks.findIndex(t => t.path === nextTrack.path)
+            if (globalIdx !== -1) setCurrentTrackIndex(globalIdx)
+            return
+        }
+
+        const currentIdxInDisplay = displayTracks.findIndex(t => t.path === currentTrack.path)
+
+        let nextTrack: Track | null = null
+        if (currentIdxInDisplay === -1) {
+            nextTrack = displayTracks[0]
+        } else {
+            // Logic for next button click:
+            // If Repeat One, Next button should still go to next track.
+            // If Repeat Off, Next button at end -> wrap to start (standard behavior) or stop? Let's wrap.
+            // If Repeat All, Next button -> wrap.
+            nextTrack = displayTracks[(currentIdxInDisplay + 1) % displayTracks.length]
+        }
+
+        if (nextTrack) {
+            const newGlobalIndex = tracks.findIndex(t => t.path === nextTrack.path)
+            if (newGlobalIndex !== -1) setCurrentTrackIndex(newGlobalIndex)
+        }
+    }, [getDisplayTracks, tracks, currentTrackIndex, isShuffle])
+
+    const handlePrevious = useCallback(() => {
+        const displayTracks = getDisplayTracks()
+        if (displayTracks.length === 0) return
+
         if (audioRef.current && audioRef.current.currentTime > 3) {
             audioRef.current.currentTime = 0
             return
         }
-        setTracks(currentTracks => {
-            setCurrentTrackIndex(idx => idx === 0 ? currentTracks.length - 1 : idx - 1)
-            return currentTracks
-        })
+
+        // If Shuffle is on, Previous should probably go back in history. 
+        // But for this simple implementation, let's just go to previous in list or random? 
+        // Standard is previous in shuffled list (if history kept) or just previous in sorted list.
+        // Let's stick to standard list Previous, even in Shuffle mode, unless we implemented a history stack.
+        // User asked for "shuffle or random", implying simple random behavior is acceptable.
+
+        const currentTrack = tracks[currentTrackIndex]
+        if (!currentTrack) {
+            const first = displayTracks[0]
+            const firstGlobalIdx = tracks.findIndex(t => t.path === first.path)
+            if (firstGlobalIdx !== -1) setCurrentTrackIndex(firstGlobalIdx)
+            return
+        }
+
+        const currentIdxInDisplay = displayTracks.findIndex(t => t.path === currentTrack.path)
+
+        let prevTrack: Track
+        if (currentIdxInDisplay === -1) {
+            prevTrack = displayTracks[0]
+        } else {
+            const newIdx = currentIdxInDisplay === 0 ? displayTracks.length - 1 : currentIdxInDisplay - 1
+            prevTrack = displayTracks[newIdx]
+        }
+
+        const newGlobalIndex = tracks.findIndex(t => t.path === prevTrack.path)
+        if (newGlobalIndex !== -1) setCurrentTrackIndex(newGlobalIndex)
+    }, [getDisplayTracks, tracks, currentTrackIndex])
+
+    // Media Session API Support
+    useEffect(() => {
+        if ('mediaSession' in navigator && currentTrack) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: currentTrack.title,
+                artist: currentTrack.artist,
+                album: currentTrack.album,
+                artwork: currentTrack.coverArt ? [{ src: currentTrack.coverArt, sizes: '512x512', type: 'image/jpeg' }] : []
+            })
+        }
+    }, [currentTrack])
+
+    useEffect(() => {
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+
+            navigator.mediaSession.setActionHandler('play', handlePlayPause);
+            navigator.mediaSession.setActionHandler('pause', handlePlayPause);
+            navigator.mediaSession.setActionHandler('previoustrack', handlePrevious);
+            navigator.mediaSession.setActionHandler('nexttrack', handleNext);
+
+            navigator.mediaSession.setActionHandler('seekto', (details) => {
+                if (details.seekTime !== undefined && audioRef.current) {
+                    audioRef.current.currentTime = details.seekTime;
+                }
+            });
+        }
+    }, [isPlaying, handlePlayPause, handlePrevious, handleNext])
+
+    // Updated onEnded
+    const onTrackEnded = useCallback(() => {
+        // If Repeat One, native loop handles it effectively. 
+        // But if 'ended' fires (some browsers don't fire ended on loop), we just ignore or replay?
+        // Actually, if we use audio.loop = true, 'ended' event is NOT fired at end of loop iteration in most browsers.
+        // So we don't need to handle 'one' here.
+        if (repeatMode === 'one') return
+
+        const displayTracks = getDisplayTracks()
+        const currentTrack = tracks[currentTrackIndex]
+        const currentIdx = displayTracks.findIndex(t => t.path === currentTrack?.path)
+
+        if (repeatMode === 'off') {
+            // Stop if at end of list and not shuffle
+            if (currentIdx < displayTracks.length - 1 || isShuffle) {
+                handleNext()
+            } else {
+                setIsPlaying(false)
+            }
+        } else {
+            // Repeat All (default)
+            handleNext()
+        }
+    }, [repeatMode, handleNext, getDisplayTracks, tracks, currentTrackIndex, isShuffle])
+
+    // Handle Auto Next (Playlist aware)
+    useEffect(() => {
+        const audio = audioRef.current
+        if (!audio) return
+
+        // We use a specific handler that uses the latest state
+        // But since we use useCallback for onTrackEnded with dependencies, 
+        // we need to make sure the event listener is updated or we use a ref.
+        // A common pattern is to just call a function that refs the latest logic?
+        // Let's rely on React cleaning up and re-adding listener when `onTrackEnded` changes.
+
+        audio.addEventListener('ended', onTrackEnded)
+        return () => audio.removeEventListener('ended', onTrackEnded)
+    }, [onTrackEnded])
+
+    // Timeline Scrubbing Logic
+    const handleScrubStart = (e: React.MouseEvent<HTMLDivElement>) => {
+        setIsScrubbing(true)
+        if (duration > 0) {
+            const rect = e.currentTarget.getBoundingClientRect()
+            const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+            setScrubTime(percent * duration)
+        }
     }
 
+    const handleScrubMove = useCallback((e: MouseEvent) => {
+        if (!isScrubbing || !duration) return
+        const progressBar = document.querySelector('.progress-area')
+        if (progressBar) {
+            const rect = progressBar.getBoundingClientRect()
+            const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+            setScrubTime(percent * duration)
+        }
+    }, [isScrubbing, duration])
+
+    const handleScrubEnd = useCallback((e: MouseEvent) => {
+        if (!isScrubbing) return
+        setIsScrubbing(false)
+        if (audioRef.current && duration) {
+            const progressBar = document.querySelector('.progress-area')
+            if (progressBar) {
+                const rect = progressBar.getBoundingClientRect()
+                const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                audioRef.current.currentTime = percent * duration
+            }
+        }
+    }, [isScrubbing, duration])
+
+    // Attach global listeners for scrubbing
+    useEffect(() => {
+        if (isScrubbing) {
+            document.body.style.userSelect = 'none'
+            document.body.style.webkitUserSelect = 'none' // For Safari/Chrome
+            window.addEventListener('mousemove', handleScrubMove)
+            window.addEventListener('mouseup', handleScrubEnd)
+        } else {
+            document.body.style.userSelect = ''
+            document.body.style.webkitUserSelect = ''
+            window.removeEventListener('mousemove', handleScrubMove)
+            window.removeEventListener('mouseup', handleScrubEnd)
+        }
+        return () => {
+            document.body.style.userSelect = ''
+            document.body.style.webkitUserSelect = ''
+            window.removeEventListener('mousemove', handleScrubMove)
+            window.removeEventListener('mouseup', handleScrubEnd)
+        }
+    }, [isScrubbing, handleScrubMove, handleScrubEnd])
+
+
     const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+        // Only seek on click if not dragging (handled by scrub end)
+        if (isScrubbing) return
         if (!audioRef.current || duration === 0) return
         const rect = e.currentTarget.getBoundingClientRect()
         const percent = (e.clientX - rect.left) / rect.width
@@ -451,11 +841,67 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         }
     }
 
-    const formatTime = (seconds: number) => {
-        if (!seconds || isNaN(seconds)) return '0:00'
-        const mins = Math.floor(seconds / 60)
-        const secs = Math.floor(seconds % 60)
-        return `${mins}:${secs.toString().padStart(2, '0')}`
+    // Format time helper
+    const formatTime = (time: number) => {
+        if (!time || isNaN(time)) return '0:00'
+        const minutes = Math.floor(time / 60)
+        const seconds = Math.floor(time % 60)
+        return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
+    }
+
+    // Helper to process image file
+    const processImageFile = useCallback((file: File) => {
+        const reader = new FileReader()
+        reader.onload = (event) => {
+            const img = new Image()
+            img.onload = () => {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1000
+                canvas.height = 1000
+                const ctx = canvas.getContext('2d')
+                if (ctx) {
+                    // Draw image covering the 1000x1000 square (object-fit: cover equivalent)
+                    const scale = Math.max(1000 / img.width, 1000 / img.height)
+                    const x = (1000 - img.width * scale) / 2
+                    const y = (1000 - img.height * scale) / 2
+                    ctx.drawImage(img, x, y, img.width * scale, img.height * scale)
+                    setNewPlaylistImage(canvas.toDataURL('image/jpeg', 0.8))
+                }
+            }
+            img.src = event.target?.result as string
+        }
+        reader.readAsDataURL(file)
+    }, [])
+
+    // Helper to process image selection
+    const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (file) {
+            processImageFile(file)
+        }
+    }
+
+    const handleImageDragOver = (e: React.DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setIsDraggingImage(true)
+    }
+
+    const handleImageDragLeave = (e: React.DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setIsDraggingImage(false)
+    }
+
+    const handleImageDrop = (e: React.DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setIsDraggingImage(false)
+
+        const file = e.dataTransfer.files?.[0]
+        if (file && file.type.startsWith('image/')) {
+            processImageFile(file)
+        }
     }
 
     if (isLoading) {
@@ -486,68 +932,152 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     return (
         <div className="music-player">
             <div className="player-background" style={{
-                backgroundImage: currentTrack?.coverArt ? `url(${currentTrack.coverArt})` : 'none'
+                backgroundImage: (activePlaylist?.coverArt || currentTrack?.coverArt)
+                    ? `url(${activePlaylist?.coverArt || currentTrack?.coverArt})`
+                    : (activePlaylist && tracks.find(t => activePlaylist.trackPaths[0] === t.path)?.coverArt)
+                        ? `url(${tracks.find(t => activePlaylist.trackPaths[0] === t.path)?.coverArt})`
+                        : 'none'
             }} />
 
             <div className="player-main-content">
                 <div className="player-left-side">
                     <div className="now-playing-art-large">
-                        {currentTrack?.coverArt ? (
+                        {activePlaylist ? (
+                            activePlaylist.coverArt ? (
+                                <img src={activePlaylist.coverArt} alt={activePlaylist.name} />
+                            ) : (
+                                <div className="auto-cover-large">
+                                    {tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => (
+                                        t.coverArt ? (
+                                            <img key={i} src={t.coverArt} alt="" />
+                                        ) : (
+                                            <div key={i} className="no-cover-cell-large">
+                                                <MusicIcon size={32} strokeWidth={1} style={{ opacity: 0.2 }} />
+                                            </div>
+                                        )
+                                    ))}
+                                    {/* Fill empty cells if playlist has < 4 tracks */}
+                                    {Array.from({ length: Math.max(0, 4 - tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).length) }).map((_, i) => (
+                                        <div key={`empty-${i}`} className="no-cover-cell-large">
+                                            <MusicIcon size={32} strokeWidth={1} style={{ opacity: 0.1 }} />
+                                        </div>
+                                    ))}
+                                </div>
+                            )
+                        ) : currentTrack?.coverArt ? (
                             <img src={currentTrack.coverArt} alt="Album Art" />
                         ) : (
                             <div className="no-art">
                                 <MusicIcon size={80} strokeWidth={1} style={{ opacity: 0.3 }} />
                             </div>
                         )}
-
-
-
-                        {/* FX Panel Overlay */}
-
                     </div>
                 </div>
 
                 <div className="player-right-side">
+                    {activePlaylist && (
+                        <button
+                            className="back-to-library-btn-floating"
+                            onClick={() => setActivePlaylist(null)}
+                        >
+                            <BackIcon size={18} />
+                        </button>
+                    )}
                     <div className="current-track-header">
                         <MarqueeText text={currentTrack?.title || 'AudRip Player'} />
                         <p className="header-artist">{currentTrack?.artist || 'Select a track to play'}</p>
                         <p className="header-album">{currentTrack?.album || 'Local Library'}</p>
                     </div>
 
-                    <div className="library-search-container">
-                        <SearchIcon size={16} className="search-icon" />
-                        <input
-                            type="text"
-                            placeholder="Search library..."
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            className="search-input-minimal"
-                        />
+                    <div className="library-controls-header">
+                        {activePlaylist ? (
+                            <div className="playlist-active-header">
+                                <div className="playlist-title-group">
+                                    <div className="title-row">
+                                        <h3>{activePlaylist.name}</h3>
+                                        <button
+                                            className="edit-active-playlist-btn"
+                                            onClick={() => {
+                                                setEditingPlaylist(activePlaylist)
+                                                setNewPlaylistImage(activePlaylist.coverArt)
+                                                setShowPlaylistModal(true)
+                                            }}
+                                            title="Edit Playlist"
+                                        >
+                                            <EditIcon size={14} />
+                                        </button>
+                                    </div>
+                                    <span>{activePlaylist.trackPaths.length} tracks</span>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="library-header-spacer" />
+                        )}
+
+                        <div className="library-search-container">
+                            <SearchIcon size={16} className="search-icon" />
+                            <input
+                                type="text"
+                                placeholder="Search library..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="search-input-minimal"
+                            />
+                        </div>
                     </div>
 
                     <div className="player-tracklist">
-                        <div className="tracklist-scroll">
+                        <div
+                            className="tracklist-scroll animate-enter"
+                            key={activePlaylist ? activePlaylist.id : 'library'}
+                            onScroll={() => {
+                                if (trackMenuOpen) {
+                                    setTrackMenuOpen(null)
+                                }
+                            }}
+                        >
                             {filteredTracks.map((track, index) => {
                                 const isActive = currentTrack && track.path === currentTrack.path
                                 return (
                                     <div
                                         key={track.path}
                                         className={`track-item ${isActive ? 'active' : ''}`}
-                                        onClick={() => handleTrackSelect(track)}
                                     >
-                                        <div className="track-index">
-                                            {isActive && isPlaying ? (
-                                                <div className="mini-equalizer">
-                                                    <span></span><span></span><span></span>
-                                                </div>
-                                            ) : (
-                                                <span className="index-number">{index + 1}</span>
-                                            )}
+                                        <div className="track-main" onClick={() => handleTrackSelect(track)}>
+                                            <div className="track-index">
+                                                {isActive && isPlaying ? (
+                                                    <div className="mini-equalizer">
+                                                        <span></span><span></span><span></span>
+                                                    </div>
+                                                ) : (
+                                                    <span className="index-number">{index + 1}</span>
+                                                )}
+                                            </div>
+                                            <div className="track-info">
+                                                <span className="track-title">{track.title}</span>
+                                            </div>
+                                            <span className="track-duration">{formatTime(track.duration)}</span>
                                         </div>
-                                        <div className="track-info">
-                                            <span className="track-title">{track.title}</span>
-                                        </div>
-                                        <span className="track-duration">{formatTime(track.duration)}</span>
+
+                                        {/* Track Menu Button */}
+                                        <button
+                                            className="track-menu-btn"
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (trackMenuOpen === track.path) {
+                                                    setTrackMenuOpen(null)
+                                                } else {
+                                                    const rect = e.currentTarget.getBoundingClientRect()
+                                                    setMenuPosition({ x: rect.right, y: rect.bottom })
+                                                    setTrackMenuOpen(track.path)
+                                                }
+                                            }}
+                                        >
+                                            <MoreIcon size={16} />
+                                        </button>
+
+                                        {/* Track Menu Dropdown */}
+
                                     </div>
                                 )
                             })}
@@ -640,13 +1170,20 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
             </div>
 
             <div className="player-bottom-bar">
-                <div className="progress-area" onClick={handleSeek}>
-                    <div className="progress-fill" style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }} />
+                <div
+                    className="progress-area"
+                    onMouseDown={handleScrubStart}
+                    onClick={handleSeek}
+                >
+                    <div
+                        className="progress-fill"
+                        style={{ width: duration ? `${((isScrubbing ? scrubTime : currentTime) / duration) * 100}%` : '0%' }}
+                    />
                 </div>
 
                 <div className="controls-row">
                     <div className="controls-left">
-                        <span className="time-display">{formatTime(currentTime)} / {formatTime(duration)}</span>
+                        <span className="time-display">{formatTime(isScrubbing ? scrubTime : currentTime)} / {formatTime(duration)}</span>
                     </div>
 
                     <div className="controls-center">
@@ -663,6 +1200,16 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                             <SparklesIcon size={18} />
                         </button>
 
+                        {/* Toggle Shuffle */}
+                        <button
+                            className="control-btn"
+                            onClick={() => setIsShuffle(!isShuffle)}
+                            title="Shuffle"
+                            style={{ color: isShuffle ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
+                        >
+                            <ShuffleIcon size={18} />
+                        </button>
+
                         <button className="control-btn" onClick={handlePrevious} title="Previous">
                             <SkipBackIcon size={20} fill="currentColor" />
                         </button>
@@ -672,8 +1219,32 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                         <button className="control-btn" onClick={handleNext} title="Next">
                             <SkipForwardIcon size={20} fill="currentColor" />
                         </button>
-                        {/* Dummy button to balance the layout so Play is exactly centered */}
-                        <div className="control-btn" style={{ visibility: 'hidden', pointerEvents: 'none' }} aria-hidden="true" />
+
+                        {/* Toggle Repeat */}
+                        <button
+                            className="control-btn"
+                            onClick={() => {
+                                if (repeatMode === 'off') setRepeatMode('all')
+                                else if (repeatMode === 'all') setRepeatMode('one')
+                                else setRepeatMode('off')
+                            }}
+                            title="Repeat"
+                            style={{ color: repeatMode !== 'off' ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
+                        >
+                            {repeatMode === 'one' ? <Repeat1Icon size={18} /> : <RepeatIcon size={18} />}
+                        </button>
+                        {/* Playlist Button */}
+                        <button
+                            className={`control-btn ${showPlaylistBrowser ? 'active-fx-btn' : ''}`}
+                            onClick={() => {
+                                if (showPlaylistBrowser) closePlaylistBrowser()
+                                else setShowPlaylistBrowser(true)
+                            }}
+                            title="Playlists"
+                            style={{ color: showPlaylistBrowser ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
+                        >
+                            <PlaylistIcon size={18} />
+                        </button>
                     </div>
 
                     <div className="controls-right">
@@ -695,6 +1266,240 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                     </div>
                 </div>
             </div>
-        </div>
+
+            {/* Playlist Browser Overlay */}
+            {/* Playlist Browser Overlay - Portal to Body for full width */}
+            {
+                showPlaylistBrowser && createPortal(
+                    <div
+                        className={`playlist-browser-overlay ${isClosingBrowser ? 'closing' : ''}`}
+                        onClick={closePlaylistBrowser}
+                    >
+                        <div
+                            className={`playlist-browser ${isClosingBrowser ? 'closing' : ''}`}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="playlist-browser-header">
+                                <h3>{trackToAddToPlaylist ? 'Add to Playlist' : 'Your Playlists'}</h3>
+                                <button className="close-btn" onClick={closePlaylistBrowser}>
+                                    <CloseIcon size={20} />
+                                </button>
+                            </div>
+
+                            <div className="playlist-grid">
+                                {playlists.map(pl => (
+                                    <div
+                                        key={pl.id}
+                                        className="playlist-card"
+                                        onClick={() => {
+                                            if (trackToAddToPlaylist) {
+                                                handleAddToPlaylist(trackToAddToPlaylist.path, pl.id)
+                                                closePlaylistBrowser()
+                                            } else {
+                                                setActivePlaylist(pl)
+                                                closePlaylistBrowser()
+                                            }
+                                        }}
+                                    >
+                                        <div className="playlist-cover">
+                                            {pl.coverArt ? (
+                                                <img src={pl.coverArt} alt={pl.name} />
+                                            ) : (
+                                                <div className="auto-cover">
+                                                    {tracks.filter(t => pl.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => (
+                                                        t.coverArt ? (
+                                                            <img key={i} src={t.coverArt} alt="" />
+                                                        ) : (
+                                                            <div key={i} className="no-cover-cell">
+                                                                <MusicIcon size={20} />
+                                                            </div>
+                                                        )
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {/* Overlay Checkmark if track is already in playlist */}
+                                            {trackToAddToPlaylist && pl.trackPaths.includes(trackToAddToPlaylist.path) && (
+                                                <div className="playlist-contains-overlay">
+                                                    <div className="check-badge">✓</div>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="playlist-info">
+                                            <span className="playlist-name">{pl.name}</span>
+                                            <span className="playlist-count">{pl.trackPaths.length} tracks</span>
+                                        </div>
+                                        <div className="playlist-card-actions">
+                                            <button
+                                                className="edit-playlist-btn"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    setEditingPlaylist(pl)
+                                                    setNewPlaylistImage(pl.coverArt)
+                                                    setShowPlaylistModal(true)
+                                                }}
+                                            >
+                                                <EditIcon size={14} />
+                                            </button>
+                                            <button
+                                                className="delete-playlist-btn"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    handleDeletePlaylist(pl.id)
+                                                }}
+                                            >
+                                                <TrashIcon size={14} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                                <div
+                                    className="playlist-card create-playlist-card"
+                                    onClick={() => {
+                                        setShowPlaylistModal(true)
+                                        closePlaylistBrowser()
+                                        // Keep trackToAddToPlaylist set so it can be used by the modal
+                                    }}
+                                >
+                                    <div className="create-icon">
+                                        <PlusIcon size={32} />
+                                    </div>
+                                    <span>Create Playlist</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
+                )
+            }
+
+            {/* Create Playlist Modal */}
+            {/* Fixed Track Menu - Portal to Body */}
+            {
+                trackMenuOpen && menuPosition && createPortal(
+                    <div
+                        className="track-menu-dropdown fixed-menu"
+                        style={{
+                            position: 'fixed',
+                            top: menuPosition?.y,
+                            left: menuPosition?.x,
+                            // transform handles alignment and animation via CSS class 'fixed-menu'
+                            zIndex: 9999,
+                            width: 'auto',
+                            minWidth: '180px'
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div
+                            className="menu-item"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                const track = tracks.find(t => t.path === trackMenuOpen)
+                                if (track) {
+                                    setTrackToAddToPlaylist(track)
+                                    setShowPlaylistBrowser(true)
+                                }
+                                setTrackMenuOpen(null)
+                            }}
+                        >
+                            <PlusIcon size={14} />
+                            <span>Add to Playlist...</span>
+                        </div>
+                    </div>,
+                    document.body
+                )
+            }
+
+            {/* Create Playlist Modal */}
+            {/* Create Playlist Modal - Portal to Body */}
+            {
+                showPlaylistModal && createPortal(
+                    <div className="playlist-modal-overlay" onClick={() => setShowPlaylistModal(false)}>
+                        <div className="playlist-modal" onClick={(e) => e.stopPropagation()}>
+                            <h3>{editingPlaylist ? 'Edit Playlist' : 'Create New Playlist'}</h3>
+                            <form onSubmit={(e) => {
+                                e.preventDefault()
+                                const form = e.target as HTMLFormElement
+                                const nameInput = form.elements.namedItem('name') as HTMLInputElement
+                                const name = nameInput.value
+                                if (name && name.trim()) {
+                                    handleSavePlaylist(name.trim(), '', newPlaylistImage)
+                                }
+                            }}>
+                                <div className="playlist-modal-content" style={{ flexDirection: 'column', alignItems: 'center', width: '100%', gap: '20px' }}>
+
+                                    <div className="form-group" style={{ width: '100%' }}>
+                                        <label>Playlist Name</label>
+                                        <input
+                                            type="text"
+                                            name="name"
+                                            defaultValue={editingPlaylist?.name || ''}
+                                            placeholder="My Awesome Playlist"
+                                            required
+                                            autoFocus
+                                            style={{ fontSize: '0.95rem', padding: '10px 12px', width: '100%' }}
+                                        />
+                                    </div>
+
+                                    <div className="form-group image-upload-group" style={{ width: '100%', alignItems: 'center' }}>
+                                        <label style={{ marginBottom: '8px', width: '100%', textAlign: 'center' }}>Cover Image</label>
+                                        <div
+                                            className={`image-preview-container ${isDraggingImage ? 'dragging' : ''}`}
+                                            onClick={() => document.getElementById('playlist-image-input')?.click()}
+                                            onDragOver={handleImageDragOver}
+                                            onDragEnter={handleImageDragOver}
+                                            onDragLeave={handleImageDragLeave}
+                                            onDrop={handleImageDrop}
+                                            style={{ width: '140px', height: '140px' }}
+                                        >
+                                            {newPlaylistImage ? (
+                                                <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                                                    <img src={newPlaylistImage} alt="Preview" className="playlist-image-preview" />
+                                                    <button
+                                                        className="remove-image-btn"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            setNewPlaylistImage(null)
+                                                        }}
+                                                        title="Remove Image"
+                                                    >
+                                                        <TrashIcon size={16} />
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div className="upload-placeholder">
+                                                    <UploadIcon size={40} className="upload-icon-animated" />
+                                                </div>
+                                            )}
+                                            <input
+                                                id="playlist-image-input"
+                                                type="file"
+                                                accept="image/*"
+                                                onChange={handleImageSelect}
+                                                style={{ display: 'none' }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="modal-actions">
+                                    <button type="button" className="cancel-btn" onClick={() => {
+                                        setShowPlaylistModal(false)
+                                        setEditingPlaylist(null)
+                                        setNewPlaylistImage(null)
+                                        setIsDraggingImage(false)
+                                    }}>
+                                        Cancel
+                                    </button>
+                                    <button type="submit" className="create-btn">
+                                        {editingPlaylist ? 'Save Changes' : 'Create Playlist'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>,
+                    document.body
+                )
+            }
+        </div >
     )
 }

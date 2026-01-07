@@ -24,6 +24,7 @@ function PlaylistEditor({ items, onUpdateItem, onRemoveItem, onClearItems, onCle
     const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
     const [bulkArtist, setBulkArtist] = useState('')
     const [bulkAlbum, setBulkAlbum] = useState('')
+    const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
 
     const selectedCount = items.filter(i => i.selected).length
 
@@ -49,6 +50,57 @@ function PlaylistEditor({ items, onUpdateItem, onRemoveItem, onClearItems, onCle
             }
         })
     }, [items, bulkAlbum, onUpdateItem])
+
+    const processImageFile = useCallback((file: File, index: number) => {
+        const reader = new FileReader()
+        reader.onload = (event) => {
+            const img = new Image()
+            img.onload = () => {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1000
+                canvas.height = 1000
+                const ctx = canvas.getContext('2d')
+                if (ctx) {
+                    const scale = Math.max(1000 / img.width, 1000 / img.height)
+                    const x = (1000 - img.width * scale) / 2
+                    const y = (1000 - img.height * scale) / 2
+                    ctx.drawImage(img, x, y, img.width * scale, img.height * scale)
+                    onUpdateItem(index, {
+                        albumArt: {
+                            imageData: canvas.toDataURL('image/jpeg', 0.8),
+                            source: 'custom',
+                            aspectRatio: coverArtRatio
+                        }
+                    })
+                }
+            }
+            img.src = event.target?.result as string
+        }
+        reader.readAsDataURL(file)
+    }, [onUpdateItem])
+
+    const handleDragOver = (e: React.DragEvent, index: number) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setDraggingIndex(index)
+    }
+
+    const handleDragLeave = (e: React.DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setDraggingIndex(null)
+    }
+
+    const handleDrop = (e: React.DragEvent, index: number) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setDraggingIndex(null)
+
+        const file = e.dataTransfer.files?.[0]
+        if (file && file.type.startsWith('image/')) {
+            processImageFile(file, index)
+        }
+    }
 
     return (
         <div className="panel playlist-panel">
@@ -191,9 +243,13 @@ function PlaylistEditor({ items, onUpdateItem, onRemoveItem, onClearItems, onCle
                                 <img
                                     src={item.albumArt?.imageData || item.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect fill=%27%231a1a2e%27 width=%27100%27 height=%27100%27/%3E%3Ctext x=%2750%27 y=%2765%27 text-anchor=%27middle%27 font-size=%2735%27%3E🎵%3C/text%3E%3C/svg%3E'}
                                     alt={item.title}
-                                    className={`playlist-thumb ${coverArtRatio === '1:1' ? 'square' : 'wide'}`}
+                                    className={`playlist-thumb ${coverArtRatio === '1:1' ? 'square' : 'wide'} ${draggingIndex === index ? 'dragging' : ''}`}
                                     referrerPolicy="no-referrer"
                                     onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect fill=%27%231a1a2e%27 width=%27100%27 height=%27100%27/%3E%3Ctext x=%2750%27 y=%2765%27 text-anchor=%27middle%27 font-size=%2735%27%3E🎵%3C/text%3E%3C/svg%3E' }}
+                                    onDragOver={(e) => handleDragOver(e, index)}
+                                    onDragEnter={(e) => handleDragOver(e, index)}
+                                    onDragLeave={handleDragLeave}
+                                    onDrop={(e) => handleDrop(e, index)}
                                 />
 
                                 <div className="playlist-item-info">
@@ -260,7 +316,13 @@ function PlaylistEditor({ items, onUpdateItem, onRemoveItem, onClearItems, onCle
                                 <div className="playlist-item-expanded">
                                     <div className="expanded-grid">
                                         {/* Left: Album Art Preview (Non-editable) */}
-                                        <div className="expanded-col-art">
+                                        <div
+                                            className={`expanded-col-art ${draggingIndex === index ? 'dragging' : ''}`}
+                                            onDragOver={(e) => handleDragOver(e, index)}
+                                            onDragEnter={(e) => handleDragOver(e, index)}
+                                            onDragLeave={handleDragLeave}
+                                            onDrop={(e) => handleDrop(e, index)}
+                                        >
                                             <img
                                                 src={item.albumArt?.imageData || item.thumbnail}
                                                 alt={item.title}
