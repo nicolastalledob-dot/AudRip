@@ -2,16 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 
 // ... existing imports ...
-import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon, MoreHorizontal as MoreIcon, ListMusic as PlaylistIcon, Plus as PlusIcon, X as CloseIcon, ArrowLeft as BackIcon, Trash2 as TrashIcon, Upload as UploadIcon, Edit2 as EditIcon, Shuffle as ShuffleIcon, Repeat as RepeatIcon, Repeat1 as Repeat1Icon } from 'lucide-react'
-
-interface Track {
-    path: string
-    title: string
-    artist: string
-    album: string
-    coverArt: string | null
-    duration: number
-}
+import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon, MoreHorizontal as MoreIcon, ListMusic as PlaylistIcon, Plus as PlusIcon, X as CloseIcon, ArrowLeft as BackIcon, Trash2 as TrashIcon, Upload as UploadIcon, Edit2 as EditIcon, Shuffle as ShuffleIcon, Repeat as RepeatIcon, Repeat1 as Repeat1Icon, Minus as MinusIcon, ArrowUpDown as SortIcon, Save as SaveIcon } from 'lucide-react'
+import { Track } from '../types'
 
 interface Playlist {
     id: string
@@ -25,6 +17,8 @@ interface Playlist {
 
 interface MusicPlayerProps {
     isActive: boolean
+    initialTracks?: Track[]
+    onRefreshTracks?: () => Promise<Track[]>
 }
 
 const MarqueeText = ({ text }: { text: string }) => {
@@ -59,14 +53,14 @@ const MarqueeText = ({ text }: { text: string }) => {
     )
 }
 
-export default function MusicPlayer({ isActive }: MusicPlayerProps) {
-    const [tracks, setTracks] = useState<Track[]>([])
+export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }: MusicPlayerProps) {
+    const [tracks, setTracks] = useState<Track[]>(initialTracks || [])
     const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1)
     const [isPlaying, setIsPlaying] = useState(false)
     const [currentTime, setCurrentTime] = useState(0)
     const [duration, setDuration] = useState(0)
     const [volume, setVolume] = useState(1)
-    const [isLoading, setIsLoading] = useState(true)
+    const [isLoading, setIsLoading] = useState(!initialTracks || initialTracks.length === 0)
     const [searchTerm, setSearchTerm] = useState('')
 
     // --- PLAYLIST STATE ---
@@ -87,6 +81,8 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     // --- PLAYBACK CONTROL STATE ---
     const [isShuffle, setIsShuffle] = useState(false)
     const [repeatMode, setRepeatMode] = useState<'off' | 'all' | 'one'>('all')
+    const shuffleHistoryRef = useRef<number[]>([])
+    const [sortBy, setSortBy] = useState<'default' | 'title' | 'artist' | 'duration' | 'recent'>('default')
 
 
     // --- AUDIO EFFECTS STATE ---
@@ -100,6 +96,93 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     const [delayLevel, setDelayLevel] = useState(0)     // 0 to 1 (Mix)
     const [stereoWidthLevel, setStereoWidthLevel] = useState(0) // 0 to 1 (Haas Mix)
 
+    // --- FX PRESETS STATE ---
+    interface FxPreset {
+        id: string
+        name: string
+        bass: number
+        reverb: number
+        pitch: number
+        saturation: number
+        highPass: number
+        delay: number
+        stereoWidth: number
+    }
+    const [fxPresets, setFxPresets] = useState<FxPreset[]>([])
+    const [activePresetId, setActivePresetId] = useState<string | null>(null)
+    const [showPresetNameModal, setShowPresetNameModal] = useState(false)
+    const [presetNameInput, setPresetNameInput] = useState('')
+
+    const loadFxPresets = useCallback(async () => {
+        try {
+            const presets = await (window.electronAPI as any).getFxPresets()
+            setFxPresets(presets)
+        } catch (error) {
+            console.error('Failed to load FX presets:', error)
+        }
+    }, [])
+
+    const applyPreset = (preset: FxPreset) => {
+        setBassLevel(preset.bass)
+        setReverbLevel(preset.reverb)
+        setPitchLevel(preset.pitch)
+        setSaturationLevel(preset.saturation)
+        setHighPassLevel(preset.highPass)
+        setDelayLevel(preset.delay)
+        setStereoWidthLevel(preset.stereoWidth)
+        setActivePresetId(preset.id)
+    }
+
+    const handleSavePreset = async () => {
+        setPresetNameInput('')
+        setShowPresetNameModal(true)
+    }
+
+    const confirmSavePreset = async () => {
+        const name = presetNameInput.trim()
+        if (!name) return
+
+        const preset: FxPreset = {
+            id: activePresetId || Date.now().toString() + Math.random().toString(36).slice(2),
+            name,
+            bass: bassLevel,
+            reverb: reverbLevel,
+            pitch: pitchLevel,
+            saturation: saturationLevel,
+            highPass: highPassLevel,
+            delay: delayLevel,
+            stereoWidth: stereoWidthLevel
+        }
+
+        try {
+            const result = await (window.electronAPI as any).saveFxPreset(preset)
+            if (result.success) {
+                setFxPresets(result.presets)
+                setActivePresetId(preset.id)
+            }
+        } catch (error) {
+            console.error('Failed to save FX preset:', error)
+        }
+        setShowPresetNameModal(false)
+        setPresetNameInput('')
+    }
+
+    const handleDeletePreset = async () => {
+        if (!activePresetId) return
+        try {
+            const result = await (window.electronAPI as any).deleteFxPreset(activePresetId)
+            if (result.success) {
+                setFxPresets(result.presets)
+                setActivePresetId(null)
+            }
+        } catch (error) {
+            console.error('Failed to delete FX preset:', error)
+        }
+    }
+
+    // Mark preset as custom when any slider changes
+    const markCustom = () => setActivePresetId(null)
+
     const closeFxPanel = () => {
         setIsClosing(true)
         setTimeout(() => {
@@ -108,13 +191,51 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         }, 200)
     }
 
-    // Get tracks for current view (all library or active playlist)
+    // Get tracks for current view (all library or active playlist), sorted
     const getDisplayTracks = useCallback(() => {
-        if (activePlaylist) {
-            return tracks.filter(t => activePlaylist.trackPaths.includes(t.path))
+        let result = activePlaylist
+            ? tracks.filter(t => activePlaylist.trackPaths.includes(t.path))
+            : [...tracks]
+
+        if (sortBy === 'title') {
+            result.sort((a, b) => a.title.localeCompare(b.title))
+        } else if (sortBy === 'artist') {
+            result.sort((a, b) => a.artist.localeCompare(b.artist))
+        } else if (sortBy === 'duration') {
+            result.sort((a, b) => a.duration - b.duration)
+        } else if (sortBy === 'recent') {
+            result.reverse()
         }
-        return tracks
-    }, [tracks, activePlaylist])
+
+        return result
+    }, [tracks, activePlaylist, sortBy])
+
+    // Sync tracks when initialTracks prop changes (preloaded from parent)
+    useEffect(() => {
+        if (!initialTracks || initialTracks.length === 0) return
+
+        setTracks(prevTracks => {
+            // Skip update if track list hasn't actually changed
+            if (prevTracks.length === initialTracks.length &&
+                prevTracks.every((t, i) => t.path === initialTracks[i].path)) {
+                return prevTracks
+            }
+
+            // Preserve current track position
+            if (prevTracks.length > 0 && currentTrackIndex >= 0) {
+                const currentPath = prevTracks[currentTrackIndex]?.path
+                const newIndex = initialTracks.findIndex(t => t.path === currentPath)
+                if (newIndex !== -1 && newIndex !== currentTrackIndex) {
+                    setCurrentTrackIndex(newIndex)
+                }
+            }
+            return initialTracks
+        })
+        setIsLoading(false)
+        if (currentTrackIndex === -1 && initialTracks.length > 0) {
+            setCurrentTrackIndex(0)
+        }
+    }, [initialTracks])
 
     const filteredTracks = getDisplayTracks().filter(track =>
         track.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -123,6 +244,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
     const audioRef = useRef<HTMLAudioElement | null>(null)
     const currentAudioPathRef = useRef<string | null>(null)
+    const shouldAutoPlayRef = useRef<boolean>(false) // Track if we should auto-play next track
 
     // Web Audio API Refs
     const audioContextRef = useRef<AudioContext | null>(null)
@@ -367,8 +489,13 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     const loadTracks = useCallback(async () => {
         setIsLoading(true)
         try {
-            // @ts-ignore
-            const loadedTracks = await (window.electronAPI as any).getMusicLibrary()
+            let loadedTracks: Track[]
+            if (onRefreshTracks) {
+                loadedTracks = await onRefreshTracks()
+            } else {
+                // @ts-ignore
+                loadedTracks = await (window.electronAPI as any).getMusicLibrary()
+            }
             setTracks(prevTracks => {
                 if (prevTracks.length > 0 && currentTrackIndex >= 0) {
                     const currentPath = prevTracks[currentTrackIndex].path
@@ -379,6 +506,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                 }
                 return loadedTracks
             })
+            shuffleHistoryRef.current = []
             if (loadedTracks.length > 0 && currentTrackIndex === -1) {
                 setCurrentTrackIndex(0)
             }
@@ -387,7 +515,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         } finally {
             setIsLoading(false)
         }
-    }, [currentTrackIndex])
+    }, [currentTrackIndex, onRefreshTracks])
 
     // Load playlists
     const loadPlaylists = useCallback(async () => {
@@ -412,7 +540,33 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
             console.error('Failed to add track to playlist:', error)
         }
         setTrackMenuOpen(null)
+    }
 
+    // Remove track from playlist
+    const handleRemoveFromPlaylist = async (trackPath: string) => {
+        if (!activePlaylist) return
+
+        // Show confirmation before removing
+        if (!window.confirm('Remove this track from the playlist?')) {
+            setTrackMenuOpen(null)
+            return
+        }
+
+        try {
+            // @ts-ignore
+            const result = await (window.electronAPI as any).removeTrackFromPlaylist(activePlaylist.id, trackPath)
+            if (result.success) {
+                await loadPlaylists()
+                // Update active playlist with removed track
+                setActivePlaylist(prev => prev ? {
+                    ...prev,
+                    trackPaths: prev.trackPaths.filter(p => p !== trackPath)
+                } : null)
+            }
+        } catch (error) {
+            console.error('Failed to remove track from playlist:', error)
+        }
+        setTrackMenuOpen(null)
     }
 
     // Save playlist (create or update)
@@ -465,6 +619,9 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
     // Delete playlist
     const handleDeletePlaylist = async (playlistId: string) => {
+        // Show confirmation before deleting
+        if (!window.confirm('Delete this playlist? This cannot be undone.')) return
+
         try {
             // @ts-ignore
             const result = await (window.electronAPI as any).deletePlaylist(playlistId)
@@ -493,8 +650,14 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
     useEffect(() => {
         if (isActive) {
-            loadTracks()
-            loadPlaylists()
+            // If tracks were preloaded, just load playlists
+            if (tracks.length > 0) {
+                loadPlaylists()
+            } else {
+                loadTracks()
+                loadPlaylists()
+            }
+            loadFxPresets()
         }
     }, [isActive])
 
@@ -548,33 +711,38 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
     // Load Source when track changes
     useEffect(() => {
-        if (currentTrack && audioRef.current) {
-            if (currentAudioPathRef.current === currentTrack.path) return
+        const track = currentTrackIndex >= 0 ? tracks[currentTrackIndex] : null
+        if (!track || !audioRef.current) return
+        // Guard: don't reload if same path is already loaded
+        if (currentAudioPathRef.current === track.path) return
 
-            const audio = audioRef.current
-            // URL format: media:// + path
-            // For Unix paths: media:// + /Users/... = media:///Users/... (3 slashes = no host)
-            // For Windows paths: media:// + C:/... = media://C:/... (drive letter as "host")
-            const mediaUrl = `media://${currentTrack.path}`
-            console.log('[Audio] Loading:', mediaUrl)
-            audio.src = mediaUrl
-            currentAudioPathRef.current = currentTrack.path
-            audio.load()
+        const audio = audioRef.current
+        const mediaUrl = `media://${track.path}`
+        console.log('[Audio] Loading:', mediaUrl)
+        audio.src = mediaUrl
+        currentAudioPathRef.current = track.path
+        audio.load()
 
-            // Re-apply pitch on every track load as it resets
-            audio.playbackRate = pitchLevel
+        // Re-apply pitch on every track load as it resets
+        audio.playbackRate = pitchLevel
 
-            if (isPlaying) {
-                audio.play().catch(console.error)
-            }
+        // Sync loop attribute for new track
+        audio.loop = (repeatMode === 'one')
+
+        // Auto-play if triggered by track ending or if already playing
+        if (isPlaying || shouldAutoPlayRef.current) {
+            shouldAutoPlayRef.current = false
+            audio.play().catch(err => {
+                console.error('[Audio] Play failed:', err)
+                setIsPlaying(false)
+            })
         }
-    }, [currentTrack])
+    }, [currentTrackIndex])
 
     // Volume
     useEffect(() => {
         if (audioRef.current) audioRef.current.volume = volume
     }, [volume])
-
 
     // Sync Loop Attribute
     useEffect(() => {
@@ -582,13 +750,6 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
             audioRef.current.loop = (repeatMode === 'one')
         }
     }, [repeatMode])
-
-    // Sync Audio Props on Load
-    useEffect(() => {
-        if (audioRef.current) {
-            audioRef.current.loop = (repeatMode === 'one')
-        }
-    }, [currentTrack])
 
     const handlePlayPause = useCallback(() => {
         if (!audioRef.current || !currentTrack) return
@@ -631,12 +792,18 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
         // Shuffle Logic
         if (isShuffle) {
-            // Pick random next track
-            if (displayTracks.length <= 1) return // Can't shuffle 1 track effectively (just repeats)
+            if (displayTracks.length <= 1) return
+
+            // Push current track to history before changing
+            shuffleHistoryRef.current.push(currentTrackIndex)
+            if (shuffleHistoryRef.current.length > 200) {
+                shuffleHistoryRef.current = shuffleHistoryRef.current.slice(-200)
+            }
+
             let randomIdx
             do {
                 randomIdx = Math.floor(Math.random() * displayTracks.length)
-            } while (displayTracks.length > 1 && displayTracks[randomIdx].path === currentTrack.path) // Avoid same track if possible
+            } while (displayTracks.length > 1 && displayTracks[randomIdx].path === currentTrack.path)
 
             const nextTrack = displayTracks[randomIdx]
             const globalIdx = tracks.findIndex(t => t.path === nextTrack.path)
@@ -667,17 +834,24 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
         const displayTracks = getDisplayTracks()
         if (displayTracks.length === 0) return
 
+        // 3-second restart: if past 3s, restart current track
         if (audioRef.current && audioRef.current.currentTime > 3) {
             audioRef.current.currentTime = 0
             return
         }
 
-        // If Shuffle is on, Previous should probably go back in history. 
-        // But for this simple implementation, let's just go to previous in list or random? 
-        // Standard is previous in shuffled list (if history kept) or just previous in sorted list.
-        // Let's stick to standard list Previous, even in Shuffle mode, unless we implemented a history stack.
-        // User asked for "shuffle or random", implying simple random behavior is acceptable.
+        // Shuffle mode: pop from history stack
+        if (isShuffle && shuffleHistoryRef.current.length > 0) {
+            const previousIndex = shuffleHistoryRef.current.pop()!
+            if (previousIndex >= 0 && previousIndex < tracks.length) {
+                shouldAutoPlayRef.current = true
+                setCurrentTrackIndex(previousIndex)
+                return
+            }
+            // If invalid, fall through to normal behavior
+        }
 
+        // Normal (non-shuffle) previous behavior
         const currentTrack = tracks[currentTrackIndex]
         if (!currentTrack) {
             const first = displayTracks[0]
@@ -698,7 +872,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
         const newGlobalIndex = tracks.findIndex(t => t.path === prevTrack.path)
         if (newGlobalIndex !== -1) setCurrentTrackIndex(newGlobalIndex)
-    }, [getDisplayTracks, tracks, currentTrackIndex])
+    }, [getDisplayTracks, tracks, currentTrackIndex, isShuffle])
 
     // Media Session API Support
     useEffect(() => {
@@ -731,27 +905,35 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
 
     // Updated onEnded
     const onTrackEnded = useCallback(() => {
-        // If Repeat One, native loop handles it effectively. 
-        // But if 'ended' fires (some browsers don't fire ended on loop), we just ignore or replay?
-        // Actually, if we use audio.loop = true, 'ended' event is NOT fired at end of loop iteration in most browsers.
-        // So we don't need to handle 'one' here.
-        if (repeatMode === 'one') return
+        // Repeat One: Replay the same song
+        if (repeatMode === 'one') {
+            if (audioRef.current) {
+                audioRef.current.currentTime = 0
+                audioRef.current.play().catch(console.error)
+            }
+            return
+        }
 
         const displayTracks = getDisplayTracks()
         const currentTrack = tracks[currentTrackIndex]
         const currentIdx = displayTracks.findIndex(t => t.path === currentTrack?.path)
 
+        // Repeat Off: Play next until end of list, then stop
         if (repeatMode === 'off') {
-            // Stop if at end of list and not shuffle
-            if (currentIdx < displayTracks.length - 1 || isShuffle) {
-                handleNext()
-            } else {
+            // If we're at the last track, stop playback
+            if (currentIdx >= displayTracks.length - 1 && !isShuffle) {
                 setIsPlaying(false)
+                return
             }
-        } else {
-            // Repeat All (default)
+            // Otherwise, play next with auto-play
+            shouldAutoPlayRef.current = true
             handleNext()
+            return
         }
+
+        // Repeat All: Always play next (handleNext wraps around at end)
+        shouldAutoPlayRef.current = true
+        handleNext()
     }, [repeatMode, handleNext, getDisplayTracks, tracks, currentTrackIndex, isShuffle])
 
     // Handle Auto Next (Playlist aware)
@@ -836,6 +1018,12 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
     const handleTrackSelect = (track: Track) => {
         const index = tracks.findIndex(t => t.path === track.path)
         if (index !== -1) {
+            if (isShuffle && currentTrackIndex >= 0) {
+                shuffleHistoryRef.current.push(currentTrackIndex)
+                if (shuffleHistoryRef.current.length > 200) {
+                    shuffleHistoryRef.current = shuffleHistoryRef.current.slice(-200)
+                }
+            }
             setCurrentTrackIndex(index)
             setIsPlaying(true)
         }
@@ -1014,15 +1202,31 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                             <div className="library-header-spacer" />
                         )}
 
-                        <div className="library-search-container">
-                            <SearchIcon size={16} className="search-icon" />
-                            <input
-                                type="text"
-                                placeholder="Search library..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="search-input-minimal"
-                            />
+                        <div className="library-search-sort-row">
+                            <div className="library-search-container">
+                                <SearchIcon size={16} className="search-icon" />
+                                <input
+                                    type="text"
+                                    placeholder="Search library..."
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    className="search-input-minimal"
+                                />
+                            </div>
+                            <div className="sort-select-container">
+                                <SortIcon size={14} />
+                                <select
+                                    className="sort-select"
+                                    value={sortBy}
+                                    onChange={(e) => setSortBy(e.target.value as any)}
+                                >
+                                    <option value="default">Default</option>
+                                    <option value="title">Title</option>
+                                    <option value="artist">Artist</option>
+                                    <option value="duration">Duration</option>
+                                    <option value="recent">Recent</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
 
@@ -1095,12 +1299,35 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                     >
                         {/* Stop propagation on this container so sliders work without closing */}
                         <div className="fx-controls-container" onClick={(e) => e.stopPropagation()}>
+                            <div className="fx-presets-row">
+                                <select
+                                    className="fx-preset-select"
+                                    value={activePresetId || ''}
+                                    onChange={(e) => {
+                                        const preset = fxPresets.find(p => p.id === e.target.value)
+                                        if (preset) applyPreset(preset)
+                                    }}
+                                >
+                                    <option value="" disabled>{activePresetId ? 'Custom' : 'Presets'}</option>
+                                    {fxPresets.map(p => (
+                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    ))}
+                                </select>
+                                <button className="fx-preset-btn" onClick={handleSavePreset} title="Save Preset">
+                                    <SaveIcon size={14} />
+                                </button>
+                                {activePresetId && (
+                                    <button className="fx-preset-btn fx-preset-btn-danger" onClick={handleDeletePreset} title="Delete Preset">
+                                        <TrashIcon size={14} />
+                                    </button>
+                                )}
+                            </div>
                             <div className="fx-row">
                                 <label>Bass Boost</label>
                                 <input
                                     type="range" min="-10" max="15" step="0.5"
                                     value={bassLevel}
-                                    onChange={(e) => setBassLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setBassLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={bassLevel.toString()}
                                 />
                             </div>
@@ -1109,7 +1336,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0" max="3" step="0.05"
                                     value={reverbLevel}
-                                    onChange={(e) => setReverbLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setReverbLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={Math.round(reverbLevel * 100) + '%'}
                                 />
                             </div>
@@ -1118,7 +1345,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0.25" max="3.0" step="0.01"
                                     value={pitchLevel}
-                                    onChange={(e) => setPitchLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setPitchLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={pitchLevel + 'x'}
                                 />
                             </div>
@@ -1127,7 +1354,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0" max="1" step="0.01"
                                     value={saturationLevel}
-                                    onChange={(e) => setSaturationLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setSaturationLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={(saturationLevel * 100).toFixed(0) + '%'}
                                 />
                             </div>
@@ -1136,7 +1363,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0" max="1" step="0.01"
                                     value={highPassLevel}
-                                    onChange={(e) => setHighPassLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setHighPassLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={(highPassLevel * 100).toFixed(0) + '%'}
                                 />
                             </div>
@@ -1145,7 +1372,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0" max="1" step="0.01"
                                     value={delayLevel}
-                                    onChange={(e) => setDelayLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setDelayLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={(delayLevel * 100).toFixed(0) + '%'}
                                 />
                             </div>
@@ -1154,7 +1381,7 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <input
                                     type="range" min="0" max="1" step="0.01"
                                     value={stereoWidthLevel}
-                                    onChange={(e) => setStereoWidthLevel(parseFloat(e.target.value))}
+                                    onChange={(e) => { setStereoWidthLevel(parseFloat(e.target.value)); markCustom() }}
                                     title={(stereoWidthLevel * 100).toFixed(0) + '%'}
                                 />
                             </div>
@@ -1162,7 +1389,62 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                                 <button onClick={() => {
                                     setBassLevel(0); setReverbLevel(0); setPitchLevel(1); setSaturationLevel(0);
                                     setHighPassLevel(0); setDelayLevel(0); setStereoWidthLevel(0);
+                                    setActivePresetId(null);
                                 }}>Reset</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Preset Name Modal */}
+                {showPresetNameModal && (
+                    <div className="fx-panel-overlay" onClick={() => setShowPresetNameModal(false)}>
+                        <div className="fx-controls-container" onClick={(e) => e.stopPropagation()} style={{ minWidth: 280 }}>
+                            <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>Save Preset</h3>
+                            <input
+                                type="text"
+                                placeholder="Preset name..."
+                                value={presetNameInput}
+                                onChange={(e) => setPresetNameInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') confirmSavePreset() }}
+                                autoFocus
+                                style={{
+                                    width: '100%',
+                                    padding: '10px 12px',
+                                    background: 'rgba(255,255,255,0.08)',
+                                    border: '1px solid rgba(255,255,255,0.15)',
+                                    borderRadius: 8,
+                                    color: 'white',
+                                    fontSize: 14,
+                                    outline: 'none',
+                                    marginBottom: 12
+                                }}
+                            />
+                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                                <button
+                                    onClick={() => setShowPresetNameModal(false)}
+                                    style={{
+                                        padding: '8px 16px',
+                                        background: 'rgba(255,255,255,0.1)',
+                                        border: 'none',
+                                        borderRadius: 6,
+                                        color: 'white',
+                                        cursor: 'pointer'
+                                    }}
+                                >Cancel</button>
+                                <button
+                                    onClick={confirmSavePreset}
+                                    disabled={!presetNameInput.trim()}
+                                    style={{
+                                        padding: '8px 16px',
+                                        background: presetNameInput.trim() ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                                        border: 'none',
+                                        borderRadius: 6,
+                                        color: 'white',
+                                        cursor: presetNameInput.trim() ? 'pointer' : 'default',
+                                        opacity: presetNameInput.trim() ? 1 : 0.5
+                                    }}
+                                >Save</button>
                             </div>
                         </div>
                     </div>
@@ -1203,7 +1485,11 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                         {/* Toggle Shuffle */}
                         <button
                             className="control-btn"
-                            onClick={() => setIsShuffle(!isShuffle)}
+                            onClick={() => {
+                                const newShuffle = !isShuffle
+                                if (!newShuffle) shuffleHistoryRef.current = []
+                                setIsShuffle(newShuffle)
+                            }}
                             title="Shuffle"
                             style={{ color: isShuffle ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
                         >
@@ -1404,6 +1690,18 @@ export default function MusicPlayer({ isActive }: MusicPlayerProps) {
                             <PlusIcon size={14} />
                             <span>Add to Playlist...</span>
                         </div>
+                        {activePlaylist && (
+                            <div
+                                className="menu-item menu-item-danger"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (trackMenuOpen) handleRemoveFromPlaylist(trackMenuOpen)
+                                }}
+                            >
+                                <MinusIcon size={14} />
+                                <span>Remove from Playlist</span>
+                            </div>
+                        )}
                     </div>,
                     document.body
                 )

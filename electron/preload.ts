@@ -35,6 +35,8 @@ export interface DownloadOptions {
 export interface DownloadProgress {
     stage: 'downloading' | 'converting' | 'complete'
     percent: number
+    speed?: string | null
+    eta?: string | null
 }
 
 export interface HistoryItem {
@@ -156,6 +158,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         coverArt: string | null
     }[]> => ipcRenderer.invoke('get-music-library'),
 
+    // FX Presets API
+    getFxPresets: (): Promise<any[]> =>
+        ipcRenderer.invoke('get-fx-presets'),
+
+    saveFxPreset: (preset: any): Promise<{ success: boolean, presets: any[] }> =>
+        ipcRenderer.invoke('save-fx-preset', preset),
+
+    deleteFxPreset: (presetId: string): Promise<{ success: boolean, presets: any[] }> =>
+        ipcRenderer.invoke('delete-fx-preset', presetId),
+
     // Playlist API
     getPlaylists: (): Promise<Playlist[]> =>
         ipcRenderer.invoke('get-playlists'),
@@ -170,7 +182,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('add-track-to-playlist', playlistId, trackPath),
 
     removeTrackFromPlaylist: (playlistId: string, trackPath: string): Promise<{ success: boolean, playlist?: Playlist, error?: string }> =>
-        ipcRenderer.invoke('remove-track-from-playlist', playlistId, trackPath)
+        ipcRenderer.invoke('remove-track-from-playlist', playlistId, trackPath),
+
+    // M4A Converter API
+    scanForM4A: (paths: string[]): Promise<Array<{
+        path: string
+        filename: string
+        title: string
+        artist: string
+        album: string
+        duration: number
+        coverArt: string | null
+    }>> => ipcRenderer.invoke('scan-for-m4a', paths),
+
+    selectM4AFiles: (): Promise<string[]> =>
+        ipcRenderer.invoke('select-m4a-files'),
+
+    convertM4AToMP3: (options: {
+        inputPath: string
+        outputFolder?: string
+        metadata: { title: string; artist: string; album: string }
+    }): Promise<{ success: boolean; outputPath: string }> =>
+        ipcRenderer.invoke('convert-m4a-to-mp3', options)
 })
 
 // Type declaration for window.electronAPI
@@ -206,6 +239,22 @@ declare global {
             deletePlaylist: (playlistId: string) => Promise<{ success: boolean, playlists: Playlist[] }>
             addTrackToPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
             removeTrackFromPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
+            // M4A Converter
+            scanForM4A: (paths: string[]) => Promise<Array<{
+                path: string
+                filename: string
+                title: string
+                artist: string
+                album: string
+                duration: number
+                coverArt: string | null
+            }>>
+            selectM4AFiles: () => Promise<string[]>
+            convertM4AToMP3: (options: {
+                inputPath: string
+                outputFolder?: string
+                metadata: { title: string; artist: string; album: string }
+            }) => Promise<{ success: boolean; outputPath: string }>
         }
     }
 }

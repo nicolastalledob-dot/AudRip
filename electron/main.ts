@@ -2,7 +2,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, net } from 'electron'
 import { join } from 'path'
 import { spawn } from 'child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir, platform } from 'os'
 
 // Register scheme as privileged
@@ -378,9 +378,31 @@ async function promptAndDownloadBinaries(missing: string[]): Promise<boolean> {
     return false
 }
 
-// Get default download directory
+// Read saved settings from disk
+function loadSettings(): { downloadFolder?: string, musicPlayerFolder?: string, mp3OutputFolder?: string } {
+    try {
+        const settingsPath = join(app.getPath('userData'), 'settings.json')
+        if (existsSync(settingsPath)) {
+            return JSON.parse(readFileSync(settingsPath, 'utf-8'))
+        }
+    } catch { }
+    return {}
+}
+
+// Get download directory (uses custom setting if set)
 function getDownloadDir(): string {
-    const dir = join(homedir(), 'Downloads', 'AudRip')
+    const settings = loadSettings()
+    const dir = settings.downloadFolder || join(homedir(), 'Downloads', 'AudRip')
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+    }
+    return dir
+}
+
+// Get music library directory (uses custom setting if set, falls back to download dir)
+function getMusicLibraryDir(): string {
+    const settings = loadSettings()
+    const dir = settings.musicPlayerFolder || getDownloadDir()
     if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true })
     }
@@ -413,9 +435,40 @@ function createWindow() {
     }
 }
 
+// Clean orphaned temp files from download folder (older than 1 hour)
+function cleanupOrphanedTempFiles() {
+    try {
+        const downloadDir = getDownloadDir()
+        const oneHourAgo = Date.now() - (60 * 60 * 1000)
+        const files = readdirSync(downloadDir)
+        let cleanedCount = 0
+
+        files.filter(f => f.startsWith('yt_')).forEach(f => {
+            const filePath = join(downloadDir, f)
+            try {
+                const stats = statSync(filePath)
+                if (stats.mtimeMs < oneHourAgo) {
+                    unlinkSync(filePath)
+                    cleanedCount++
+                    console.log('[Cleanup] Removed orphaned temp:', f)
+                }
+            } catch { }
+        })
+
+        if (cleanedCount > 0) {
+            console.log(`[Cleanup] Cleaned ${cleanedCount} orphaned temp files`)
+        }
+    } catch (e) {
+        console.error('[Cleanup] Error during temp cleanup:', e)
+    }
+}
+
 app.whenReady().then(async () => {
     // Create window first so user sees something
     createWindow()
+
+    // Clean orphaned temp files from previous sessions
+    cleanupOrphanedTempFiles()
 
     // Then verify binaries
     const binCheck = verifyBinaries()
@@ -852,17 +905,38 @@ ipcMain.handle('download-audio', async (_event, options: {
             })
         }
 
+        // Timeout: kill yt-dlp if it takes longer than 5 minutes
+        const downloadTimeout = setTimeout(() => {
+            console.error('[Main] yt-dlp timeout after 5 minutes, killing process')
+            downloadProc.kill('SIGKILL')
+        }, 5 * 60 * 1000)
+
+        let stderrOutput = ''
+
         downloadProc.stdout.on('data', (data) => {
             const output = data.toString()
             const match = output.match(/(\d+\.?\d*)%/)
             if (match) {
-                _event.sender.send('download-progress', { stage: 'downloading', percent: parseFloat(match[1]) })
+                // Parse speed and ETA from yt-dlp output
+                // Example: "[download] 45.2% of 5.23MiB at 2.15MiB/s ETA 00:02"
+                const speedMatch = output.match(/at\s+([\d.]+\s*\w+\/s)/i)
+                const etaMatch = output.match(/ETA\s+([\d:]+)/i)
+
+                _event.sender.send('download-progress', {
+                    stage: 'downloading',
+                    percent: parseFloat(match[1]),
+                    speed: speedMatch?.[1] || null,
+                    eta: etaMatch?.[1] || null
+                })
             }
         })
 
-        downloadProc.stderr.on('data', (_data) => { })
+        downloadProc.stderr.on('data', (data) => {
+            stderrOutput += data.toString()
+        })
 
         downloadProc.on('close', async (code) => {
+            clearTimeout(downloadTimeout)
             if (options.id) activeDownloads.delete(options.id)
 
             if ((options.id && cancelledDownloads.has(options.id)) || downloadProc.killed) {
@@ -1054,7 +1128,15 @@ ipcMain.handle('download-audio', async (_event, options: {
             console.log(`[Main] FFmpeg processing: ${ffmpegArgs.join(' ')}`)
             const ffmpegProc = spawn(ffmpegCmd, ffmpegArgs)
 
+            // Timeout: kill ffmpeg if it takes longer than 10 minutes
+            const ffmpegTimeout = setTimeout(() => {
+                console.error('[Main] FFmpeg timeout after 10 minutes, killing process')
+                ffmpegProc.kill('SIGKILL')
+            }, 10 * 60 * 1000)
+
             ffmpegProc.on('close', (fCode) => {
+                clearTimeout(ffmpegTimeout)
+
                 // Cleanup ALL temps (audio, images, eventual yt-dlp leftovers)
                 try {
                     const files = readdirSync(downloadDir)
@@ -1067,6 +1149,8 @@ ipcMain.handle('download-audio', async (_event, options: {
                 if (fCode === 0) {
                     _event.sender.send('download-progress', { stage: 'complete', percent: 100 })
                     resolve({ success: true, path: outputPath })
+                } else if (ffmpegProc.killed) {
+                    reject(new Error('FFmpeg timed out after 10 minutes'))
                 } else {
                     reject(new Error(`FFmpeg failed: ${fCode}`))
                 }
@@ -1080,10 +1164,10 @@ ipcMain.handle('show-in-folder', async (_event, path: string) => {
     shell.showItemInFolder(path)
 })
 
-// Select download folder
+// Select download folder (with ability to create new folders)
 ipcMain.handle('select-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-        properties: ['openDirectory']
+        properties: ['openDirectory', 'createDirectory']
     })
     return result.filePaths[0] || null
 })
@@ -1123,7 +1207,6 @@ ipcMain.handle('save-to-history', async (_event, item: { artist?: string, album?
         history = JSON.parse(readFileSync(historyPath, 'utf-8'))
     }
     history.unshift(item)
-    history = history.slice(0, 50) // Keep last 50 items
     writeFileSync(historyPath, JSON.stringify(history, null, 2))
 
     // Also save artist/album to metadata history
@@ -1322,9 +1405,9 @@ ipcMain.handle('process-album-art', async (_event, options: {
     })
 })
 
-// Get music library from downloads folder
+// Get music library from music library folder
 ipcMain.handle('get-music-library', async () => {
-    const downloadDir = getDownloadDir()
+    const downloadDir = getMusicLibraryDir()
     const ffprobe = getBinaryPath(platform() === 'win32' ? 'ffprobe.exe' : 'ffprobe')
     const ffprobeCmd = existsSync(ffprobe) ? ffprobe : 'ffprobe'
 
@@ -1500,6 +1583,71 @@ function savePlaylists(playlists: Playlist[]): boolean {
     }
 }
 
+// ===== FX Presets =====
+
+interface FxPreset {
+    id: string
+    name: string
+    bass: number
+    reverb: number
+    pitch: number
+    saturation: number
+    highPass: number
+    delay: number
+    stereoWidth: number
+}
+
+function getFxPresetsFilePath(): string {
+    return join(app.getPath('userData'), 'fx-presets.json')
+}
+
+function loadFxPresets(): FxPreset[] {
+    const filePath = getFxPresetsFilePath()
+    try {
+        if (existsSync(filePath)) {
+            return JSON.parse(readFileSync(filePath, 'utf-8'))
+        }
+    } catch (e) {
+        console.error('[FxPresets] Failed to load:', e)
+    }
+    return []
+}
+
+function saveFxPresetsToFile(presets: FxPreset[]): boolean {
+    try {
+        writeFileSync(getFxPresetsFilePath(), JSON.stringify(presets, null, 2))
+        return true
+    } catch (e) {
+        console.error('[FxPresets] Failed to save:', e)
+        return false
+    }
+}
+
+ipcMain.handle('get-fx-presets', async () => {
+    return loadFxPresets()
+})
+
+ipcMain.handle('save-fx-preset', async (_event, preset: FxPreset) => {
+    console.log('[FxPresets] Saving preset:', preset)
+    const presets = loadFxPresets()
+    const existingIndex = presets.findIndex(p => p.id === preset.id)
+    if (existingIndex >= 0) {
+        presets[existingIndex] = preset
+    } else {
+        presets.push(preset)
+    }
+    const success = saveFxPresetsToFile(presets)
+    console.log('[FxPresets] Save result:', success, 'Total presets:', presets.length)
+    return { success, presets }
+})
+
+ipcMain.handle('delete-fx-preset', async (_event, presetId: string) => {
+    const presets = loadFxPresets()
+    const filtered = presets.filter(p => p.id !== presetId)
+    const success = saveFxPresetsToFile(filtered)
+    return { success, presets: filtered }
+})
+
 // Get all playlists
 ipcMain.handle('get-playlists', async () => {
     return loadPlaylists()
@@ -1562,4 +1710,193 @@ ipcMain.handle('remove-track-from-playlist', async (_event, playlistId: string, 
     playlist.updatedAt = Date.now()
     const success = savePlaylists(playlists)
     return { success, playlist }
+})
+
+// ===== M4A Converter Handlers =====
+
+// Scan paths for M4A files (supports files and folders recursively)
+ipcMain.handle('scan-for-m4a', async (_event, paths: string[]) => {
+    const ffprobe = getBinaryPath(platform() === 'win32' ? 'ffprobe.exe' : 'ffprobe')
+    const ffprobeCmd = existsSync(ffprobe) ? ffprobe : 'ffprobe'
+
+    const m4aFiles: Array<{
+        path: string
+        filename: string
+        title: string
+        artist: string
+        album: string
+        duration: number
+        coverArt: string | null
+    }> = []
+
+    // Recursively find M4A files
+    const findM4AFiles = (dir: string): string[] => {
+        const results: string[] = []
+        try {
+            const items = readdirSync(dir, { withFileTypes: true })
+            for (const item of items) {
+                const fullPath = join(dir, item.name)
+                if (item.isDirectory()) {
+                    results.push(...findM4AFiles(fullPath))
+                } else if (item.isFile() && item.name.toLowerCase().endsWith('.m4a')) {
+                    results.push(fullPath)
+                }
+            }
+        } catch (e) {
+            console.error('[M4A Scan] Error reading directory:', dir, e)
+        }
+        return results
+    }
+
+    // Process each path
+    const allPaths: string[] = []
+    for (const p of paths) {
+        try {
+            const stat = require('fs').statSync(p)
+            if (stat.isDirectory()) {
+                allPaths.push(...findM4AFiles(p))
+            } else if (p.toLowerCase().endsWith('.m4a')) {
+                allPaths.push(p)
+            }
+        } catch (e) {
+            console.error('[M4A Scan] Error checking path:', p, e)
+        }
+    }
+
+    // Extract metadata from each M4A file
+    for (const filePath of allPaths) {
+        try {
+            const metadata = await new Promise<any>((resolve, reject) => {
+                const args = [
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    '-show_streams',
+                    filePath
+                ]
+                const proc = spawn(ffprobeCmd, args)
+                let stdout = ''
+                proc.stdout.on('data', (data) => { stdout += data.toString() })
+                proc.on('close', (code) => {
+                    if (code === 0) {
+                        try {
+                            resolve(JSON.parse(stdout))
+                        } catch {
+                            reject(new Error('Failed to parse metadata'))
+                        }
+                    } else {
+                        reject(new Error(`ffprobe failed with code ${code}`))
+                    }
+                })
+            })
+
+            const format = metadata.format || {}
+            const tags = format.tags || {}
+
+            // Extract cover art as base64 if present
+            let coverArt: string | null = null
+            try {
+                const coverPath = join(app.getPath('temp'), `cover_${Date.now()}.jpg`)
+                await new Promise<void>((resolve, reject) => {
+                    const ffmpeg = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+                    const ffmpegCmd = existsSync(ffmpeg) ? ffmpeg : 'ffmpeg'
+                    const proc = spawn(ffmpegCmd, ['-i', filePath, '-an', '-vcodec', 'copy', '-y', coverPath])
+                    proc.on('close', (code) => {
+                        if (code === 0 && existsSync(coverPath)) {
+                            const buffer = readFileSync(coverPath)
+                            coverArt = `data:image/jpeg;base64,${buffer.toString('base64')}`
+                            try { unlinkSync(coverPath) } catch { }
+                        }
+                        resolve()
+                    })
+                    proc.on('error', () => resolve())
+                })
+            } catch { }
+
+            m4aFiles.push({
+                path: filePath,
+                filename: filePath.split('/').pop() || filePath.split('\\').pop() || filePath,
+                title: tags.title || '',
+                artist: tags.artist || tags.album_artist || '',
+                album: tags.album || '',
+                duration: parseFloat(format.duration) || 0,
+                coverArt
+            })
+        } catch (e) {
+            console.error('[M4A Scan] Error extracting metadata:', filePath, e)
+        }
+    }
+
+    return m4aFiles
+})
+
+// Select M4A files via dialog
+ipcMain.handle('select-m4a-files', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'M4A Audio', extensions: ['m4a'] }]
+    })
+    return result.filePaths || []
+})
+
+// Convert M4A to MP3 at 320kbps
+ipcMain.handle('convert-m4a-to-mp3', async (_event, options: {
+    inputPath: string
+    outputFolder?: string
+    metadata: { title: string; artist: string; album: string }
+}) => {
+    return new Promise((resolve, reject) => {
+        const ffmpeg = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+        const ffmpegCmd = existsSync(ffmpeg) ? ffmpeg : 'ffmpeg'
+
+        // Determine output path
+        const inputDir = options.inputPath.substring(0, options.inputPath.lastIndexOf('/') !== -1
+            ? options.inputPath.lastIndexOf('/')
+            : options.inputPath.lastIndexOf('\\'))
+        const outputDir = options.outputFolder || inputDir
+        const baseName = options.inputPath.split('/').pop()?.split('\\').pop()?.replace('.m4a', '') || 'output'
+        const safeBaseName = baseName.replace(/[<>:"/\\|?*]/g, '_')
+        const outputPath = join(outputDir, `${safeBaseName}.mp3`)
+
+        // Ensure output directory exists
+        if (!existsSync(outputDir)) {
+            mkdirSync(outputDir, { recursive: true })
+        }
+
+        // FFmpeg command: convert M4A to MP3 at 320kbps, preserving metadata
+        const args = [
+            '-i', options.inputPath,
+            '-codec:a', 'libmp3lame',
+            '-b:a', '320k',
+            '-map_metadata', '0',
+            '-metadata', `title=${options.metadata.title}`,
+            '-metadata', `artist=${options.metadata.artist}`,
+            '-metadata', `album=${options.metadata.album}`,
+            '-id3v2_version', '3',
+            '-y',
+            outputPath
+        ]
+
+        console.log(`[M4A Convert] Converting: ${options.inputPath} -> ${outputPath}`)
+        const proc = spawn(ffmpegCmd, args)
+
+        let stderr = ''
+        proc.stderr.on('data', (data) => {
+            stderr += data.toString()
+        })
+
+        proc.on('close', (code) => {
+            if (code === 0) {
+                console.log(`[M4A Convert] Success: ${outputPath}`)
+                resolve({ success: true, outputPath })
+            } else {
+                console.error(`[M4A Convert] Failed:`, stderr)
+                reject(new Error(`Conversion failed: ${stderr.slice(-200)}`))
+            }
+        })
+
+        proc.on('error', (err) => {
+            reject(new Error(`Failed to start ffmpeg: ${err.message}`))
+        })
+    })
 })

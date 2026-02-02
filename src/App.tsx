@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Home as HomeIcon, History as HistoryIcon, Headphones as HeadphonesIcon, Settings as SettingsIcon } from 'lucide-react'
+import { Home as HomeIcon, History as HistoryIcon, Headphones as HeadphonesIcon, Settings as SettingsIcon, Recycle } from 'lucide-react'
 import UrlInput from './components/UrlInput'
 import DownloadHistory from './components/DownloadHistory'
 import PlaylistEditor from './components/PlaylistEditor'
 import MusicPlayer from './components/MusicPlayer'
 import SettingsModal, { Settings } from './components/SettingsModal'
-import { PlaylistItem } from './types'
+import M4AConverter from './components/M4AConverter'
+import { PlaylistItem, Track } from './types'
 
-type ViewType = 'home' | 'history' | 'player'
+type ViewType = 'home' | 'history' | 'player' | 'converter'
 
 interface VideoInfo {
     id: string
@@ -27,6 +28,8 @@ interface DownloadState {
     completedPath?: string
     currentIndex?: number
     totalCount?: number
+    speed?: string | null
+    eta?: string | null
 }
 
 function App() {
@@ -37,24 +40,71 @@ function App() {
     const [showSettings, setShowSettings] = useState(false)
     const [settings, setSettings] = useState<Settings>({
         format: 'm4a',
-        coverArtRatio: '16:9'
+        coverArtRatio: '16:9',
+        downloadFolder: '',
+        musicPlayerFolder: '',
+        mp3OutputFolder: ''
     })
 
     const [downloadState, setDownloadState] = useState<DownloadState>({ stage: 'idle', percent: 0 })
     const [activeView, setActiveView] = useState<ViewType>('home')
     const [isSettingsLoaded, setIsSettingsLoaded] = useState(false)
 
+    // Music library preload state
+    const [musicLibrary, setMusicLibrary] = useState<Track[]>([])
+    const [isLibraryLoaded, setIsLibraryLoaded] = useState(false)
+    const [showSplash, setShowSplash] = useState(true)
+
+    const isAppReady = isSettingsLoaded && isLibraryLoaded
+
     // Load settings
     useEffect(() => {
         if (window.electronAPI?.getSettings) {
             window.electronAPI.getSettings().then(saved => {
-                if (saved) setSettings(saved)
+                if (saved) setSettings(prev => ({ ...prev, ...saved }))
                 setIsSettingsLoaded(true)
             })
         } else {
             setIsSettingsLoaded(true)
         }
     }, [])
+
+    // Preload music library on mount
+    useEffect(() => {
+        if ((window.electronAPI as any)?.getMusicLibrary) {
+            (window.electronAPI as any).getMusicLibrary()
+                .then((tracks: Track[]) => {
+                    setMusicLibrary(tracks)
+                    setIsLibraryLoaded(true)
+                })
+                .catch((err: Error) => {
+                    console.error('Failed to preload music library:', err)
+                    setIsLibraryLoaded(true)
+                })
+        } else {
+            setIsLibraryLoaded(true)
+        }
+    }, [])
+
+    // Fade out splash when ready
+    useEffect(() => {
+        if (isAppReady) {
+            const timeout = setTimeout(() => setShowSplash(false), 500)
+            return () => clearTimeout(timeout)
+        }
+    }, [isAppReady])
+
+    // Refresh music library (called by MusicPlayer or after download)
+    const refreshMusicLibrary = useCallback(async () => {
+        try {
+            const tracks = await (window.electronAPI as any).getMusicLibrary()
+            setMusicLibrary(tracks)
+            return tracks
+        } catch (err) {
+            console.error('Failed to refresh music library:', err)
+            return musicLibrary
+        }
+    }, [musicLibrary])
 
     // Save settings (debounce implied by useEffect nature if typing, but toggle is distinct)
     useEffect(() => {
@@ -87,7 +137,9 @@ function App() {
                 setDownloadState(prev => ({
                     ...prev,
                     stage: progress.stage,
-                    percent: progress.percent
+                    percent: progress.percent,
+                    speed: progress.speed,
+                    eta: progress.eta
                 }))
             }
 
@@ -242,6 +294,17 @@ function App() {
                 } catch { /* keep original */ }
 
                 const info = await window.electronAPI.getVideoInfo(cleanUrl)
+
+                // Duplicate detection
+                const isDuplicate = playlistItems.some(item => item.url === info.url || item.id === info.id)
+                if (isDuplicate) {
+                    const addAnyway = window.confirm('This URL is already in the queue. Add it again?')
+                    if (!addAnyway) {
+                        setIsLoading(false)
+                        return
+                    }
+                }
+
                 const newItem: PlaylistItem = {
                     ...info,
                     metadata: {
@@ -383,8 +446,10 @@ function App() {
                 percent: 100,
                 totalCount: selectedItems.length
             })
+            // Refresh music library so new downloads appear in the player
+            refreshMusicLibrary()
         }
-    }, [playlistItems, settings.format, settings.coverArtRatio])
+    }, [playlistItems, settings.format, settings.coverArtRatio, refreshMusicLibrary])
 
     const handleUpdatePlaylistItem = useCallback((index: number, updates: Partial<PlaylistItem>) => {
         setPlaylistItems(items => items.map((item, i) =>
@@ -411,12 +476,17 @@ function App() {
     }, [])
 
     const handleClearItems = useCallback(() => {
+        if (playlistItems.length === 0) return
+        if (!window.confirm(`Clear all ${playlistItems.length} items from queue?`)) return
         setPlaylistItems([])
-    }, [])
+    }, [playlistItems.length])
 
     const handleClearSelected = useCallback(() => {
+        const selectedCount = playlistItems.filter(item => item.selected).length
+        if (selectedCount === 0) return
+        if (!window.confirm(`Remove ${selectedCount} selected item(s)?`)) return
         setPlaylistItems(prev => prev.filter(item => !item.selected))
-    }, [])
+    }, [playlistItems])
 
     const isDownloading = downloadState.stage === 'downloading' || downloadState.stage === 'converting'
 
@@ -440,170 +510,204 @@ function App() {
         switch (activeView) {
             case 'history': return 'view-history'
             case 'player': return 'view-player'
+            case 'converter': return 'view-converter'
             default: return 'view-home'
         }
     }
 
     return (
-        <div className="app">
-            <div className="grid-background" />
-
-            <div className="top-section">
-                <header className="app-header">
-                    <h1>AudRip</h1>
-                </header>
-
-
-
-                <div className="toolbar">
-                    <button
-                        className={`toolbar-btn ${activeView === 'home' ? 'active' : ''}`}
-                        onClick={() => setActiveView('home')}
-                        title="Downloads"
-                    >
-                        <HomeIcon size={20} />
-                    </button>
-                    <button
-                        className={`toolbar-btn ${activeView === 'history' ? 'active' : ''}`}
-                        onClick={() => setActiveView('history')}
-                        title="History"
-                    >
-                        <HistoryIcon size={20} />
-                    </button>
-                    <button
-                        className={`toolbar-btn ${activeView === 'player' ? 'active' : ''}`}
-                        onClick={() => setActiveView('player')}
-                        title="Music Player"
-                    >
-                        <HeadphonesIcon size={20} />
-                    </button>
-                    <button
-                        className="toolbar-btn"
-                        onClick={() => setShowSettings(true)}
-                        title="Settings"
-                    >
-                        <SettingsIcon size={20} />
-                    </button>
+        <>
+            {showSplash && (
+                <div className={`splash-screen ${isAppReady ? 'fade-out' : ''}`}>
+                    <div className="splash-content">
+                        <h1 className="splash-title">AudRip</h1>
+                        <div className="splash-loader">
+                            <div className="loading-spinner"></div>
+                        </div>
+                        <p className="splash-subtitle">Loading your library...</p>
+                    </div>
                 </div>
+            )}
+            <div className="app" style={{ visibility: showSplash ? 'hidden' : 'visible' }}>
+                <div className="grid-background" />
 
-                <div className={`url-container ${activeView !== 'home' ? 'hidden' : ''}`}>
-                    <UrlInput
-                        onSubmit={handleUrlSubmit}
-                        isLoading={isLoading}
-                        disabled={isDownloading}
-                    />
-                </div>
-            </div>
+                <div className="top-section">
+                    <header className="app-header">
+                        <h1>AudRip</h1>
+                    </header>
 
-            <main className={`app-main ${isTransitioning ? 'transitioning' : ''}`}>
-                <div className={`view-container ${getViewClass()}`}>
-                    <div className="view-pane history-pane-wrapper">
-                        <DownloadHistory isActive={activeView === 'history'} />
+
+
+                    <div className="toolbar">
+                        <button
+                            className={`toolbar-btn ${activeView === 'home' ? 'active' : ''}`}
+                            onClick={() => setActiveView('home')}
+                            title="Downloads"
+                        >
+                            <HomeIcon size={20} />
+                        </button>
+                        <button
+                            className={`toolbar-btn ${activeView === 'history' ? 'active' : ''}`}
+                            onClick={() => setActiveView('history')}
+                            title="History"
+                        >
+                            <HistoryIcon size={20} />
+                        </button>
+                        <button
+                            className={`toolbar-btn ${activeView === 'player' ? 'active' : ''}`}
+                            onClick={() => setActiveView('player')}
+                            title="Music Player"
+                        >
+                            <HeadphonesIcon size={20} />
+                        </button>
+                        <button
+                            className={`toolbar-btn ${activeView === 'converter' ? 'active' : ''}`}
+                            onClick={() => setActiveView('converter')}
+                            title="M4A to MP3 Converter"
+                        >
+                            <Recycle size={20} />
+                        </button>
+                        <button
+                            className="toolbar-btn"
+                            onClick={() => setShowSettings(true)}
+                            title="Settings"
+                        >
+                            <SettingsIcon size={20} />
+                        </button>
                     </div>
 
-                    <div className="view-pane player-pane-wrapper">
-                        <MusicPlayer isActive={activeView === 'player'} />
+                    <div className={`url-container ${activeView !== 'home' ? 'hidden' : ''}`}>
+                        <UrlInput
+                            onSubmit={handleUrlSubmit}
+                            isLoading={isLoading}
+                            disabled={isDownloading}
+                        />
                     </div>
+                </div>
 
-                    <div className="view-pane home-pane-wrapper">
-                        <div className={`queue-area ${playlistItems.length === 0 ? 'empty-queue' : ''}`}>
-                            <PlaylistEditor
-                                items={playlistItems}
-                                onUpdateItem={handleUpdatePlaylistItem}
-                                onRemoveItem={handleRemoveItem}
-                                onClearItems={handleClearItems}
-                                onClearSelected={handleClearSelected}
-                                onToggleAll={handleToggleAll}
-                                coverArtRatio={settings.coverArtRatio}
+                <main className={`app-main ${isTransitioning ? 'transitioning' : ''}`}>
+                    <div className={`view-container ${getViewClass()}`}>
+                        <div className="view-pane history-pane-wrapper">
+                            <DownloadHistory isActive={activeView === 'history'} />
+                        </div>
+
+                        <div className="view-pane player-pane-wrapper">
+                            <MusicPlayer
+                                isActive={activeView === 'player'}
+                                initialTracks={musicLibrary}
+                                onRefreshTracks={refreshMusicLibrary}
                             />
                         </div>
 
-                        <div className="action-footer">
-                            {downloadState.stage === 'idle' ? (
-                                <button
-                                    className="download-button"
-                                    onClick={handleDownload}
-                                    disabled={playlistItems.length === 0 || playlistItems.filter(i => i.selected).length === 0}
-                                    style={{ width: '100%' }}
-                                >
-                                    {playlistItems.length > 0 ? `Download Now (${playlistItems.filter(i => i.selected).length})` : 'Download Now'}
-                                </button>
-                            ) : (downloadState.stage === 'downloading' || downloadState.stage === 'converting') ? (
-                                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                    <div style={{
-                                        textAlign: 'center',
-                                        color: 'var(--text-secondary)',
-                                        fontSize: '13px',
-                                        fontWeight: 500
-                                    }}>
-                                        Downloaded {completedCount} / {selectedCount}
-                                    </div>
+                        <div className="view-pane converter-pane-wrapper">
+                            <M4AConverter
+                                isActive={activeView === 'converter'}
+                                outputFolder={settings.mp3OutputFolder}
+                            />
+                        </div>
+
+                        <div className="view-pane home-pane-wrapper">
+                            <div className={`queue-area ${playlistItems.length === 0 ? 'empty-queue' : ''}`}>
+                                <PlaylistEditor
+                                    items={playlistItems}
+                                    onUpdateItem={handleUpdatePlaylistItem}
+                                    onRemoveItem={handleRemoveItem}
+                                    onClearItems={handleClearItems}
+                                    onClearSelected={handleClearSelected}
+                                    onToggleAll={handleToggleAll}
+                                    coverArtRatio={settings.coverArtRatio}
+                                />
+                            </div>
+
+                            <div className="action-footer">
+                                {downloadState.stage === 'idle' ? (
                                     <button
-                                        className="cancel-button"
-                                        onClick={handleCancel}
+                                        className="download-button"
+                                        onClick={handleDownload}
+                                        disabled={playlistItems.length === 0 || playlistItems.filter(i => i.selected).length === 0}
                                         style={{ width: '100%' }}
                                     >
-                                        Cancel Download
+                                        {playlistItems.length > 0 ? `Download Now (${playlistItems.filter(i => i.selected).length})` : 'Download Now'}
                                     </button>
-                                </div>
-                            ) : downloadState.stage === 'complete' ? (
-                                <div className="footer-actions">
-                                    <button className="secondary-button" onClick={handleShowInFolder}>
-                                        📂 Show in Folder
-                                    </button>
-                                    <button className="download-button" onClick={handleReset}>
-                                        Done
-                                    </button>
-                                </div>
-                            ) : downloadState.stage === 'error' ? (
-                                <div style={{ width: '100%', textAlign: 'center' }}>
-                                    <div style={{ color: '#ff4444', marginBottom: '8px', fontSize: '13px', padding: '0 10px' }}>
-                                        {downloadState.error}
+                                ) : (downloadState.stage === 'downloading' || downloadState.stage === 'converting') ? (
+                                    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                        <div style={{
+                                            textAlign: 'center',
+                                            color: 'var(--text-secondary)',
+                                            fontSize: '13px',
+                                            fontWeight: 500
+                                        }}>
+                                            Downloaded {completedCount} / {selectedCount}
+                                            {downloadState.speed && ` • ${downloadState.speed}`}
+                                            {downloadState.eta && ` • ETA ${downloadState.eta}`}
+                                        </div>
+                                        <button
+                                            className="cancel-button"
+                                            onClick={handleCancel}
+                                            style={{ width: '100%' }}
+                                        >
+                                            Cancel Download
+                                        </button>
                                     </div>
-                                    <button className="secondary-button" onClick={handleReset} style={{ width: '100%' }}>
-                                        Dismiss
-                                    </button>
-                                </div>
-                            ) : null}
+                                ) : downloadState.stage === 'complete' ? (
+                                    <div className="footer-actions">
+                                        <button className="secondary-button" onClick={handleShowInFolder}>
+                                            📂 Show in Folder
+                                        </button>
+                                        <button className="download-button" onClick={handleReset}>
+                                            Done
+                                        </button>
+                                    </div>
+                                ) : downloadState.stage === 'error' ? (
+                                    <div style={{ width: '100%', textAlign: 'center' }}>
+                                        <div style={{ color: '#ff4444', marginBottom: '8px', fontSize: '13px', padding: '0 10px' }}>
+                                            {downloadState.error}
+                                        </div>
+                                        <button className="secondary-button" onClick={handleReset} style={{ width: '100%' }}>
+                                            Dismiss
+                                        </button>
+                                    </div>
+                                ) : null}
+                            </div>
                         </div>
                     </div>
-                </div>
-            </main>
+                </main>
 
-            {showSettings && (
-                <SettingsModal
-                    settings={settings}
-                    onUpdateSettings={setSettings}
-                    onClose={() => setShowSettings(false)}
-                />
-            )}
+                {showSettings && (
+                    <SettingsModal
+                        settings={settings}
+                        onUpdateSettings={setSettings}
+                        onClose={() => setShowSettings(false)}
+                    />
+                )}
 
-            {/* Playlist Choice Modal */}
-            {playlistChoice && (
-                <div className="modal-overlay" onClick={() => setPlaylistChoice(null)}>
-                    <div className="modal playlist-choice-modal" onClick={e => e.stopPropagation()}>
-                        <h2>{playlistChoice.url.includes('soundcloud.com') ? 'Song from Set Detected' : 'Video from Playlist Detected'}</h2>
-                        <p>This {playlistChoice.url.includes('soundcloud.com') ? 'song' : 'video'} is part of a playlist. What would you like to download?</p>
-                        <div className="playlist-choice-buttons">
-                            <button
-                                className="playlist-action-btn-modal primary"
-                                onClick={() => handlePlaylistChoice('single')}
-                            >
-                                <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Just This Song' : 'Just This Video'}</span>
-                            </button>
-                            <button
-                                className={`playlist-action-btn-modal primary ${playlistChoice.url.includes('soundcloud.com') ? 'disabled' : ''}`}
-                                onClick={() => handlePlaylistChoice('playlist')}
-                                disabled={playlistChoice.url.includes('soundcloud.com')}
-                                title={playlistChoice.url.includes('soundcloud.com') ? 'SoundCloud playlists not yet supported' : ''}
-                            >
-                                <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Not Available' : 'Full Playlist'}</span>
-                            </button>
+                {/* Playlist Choice Modal */}
+                {playlistChoice && (
+                    <div className="modal-overlay" onClick={() => setPlaylistChoice(null)}>
+                        <div className="modal playlist-choice-modal" onClick={e => e.stopPropagation()}>
+                            <h2>{playlistChoice.url.includes('soundcloud.com') ? 'Song from Set Detected' : 'Video from Playlist Detected'}</h2>
+                            <p>This {playlistChoice.url.includes('soundcloud.com') ? 'song' : 'video'} is part of a playlist. What would you like to download?</p>
+                            <div className="playlist-choice-buttons">
+                                <button
+                                    className="playlist-action-btn-modal primary"
+                                    onClick={() => handlePlaylistChoice('single')}
+                                >
+                                    <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Just This Song' : 'Just This Video'}</span>
+                                </button>
+                                <button
+                                    className={`playlist-action-btn-modal primary ${playlistChoice.url.includes('soundcloud.com') ? 'disabled' : ''}`}
+                                    onClick={() => handlePlaylistChoice('playlist')}
+                                    disabled={playlistChoice.url.includes('soundcloud.com')}
+                                    title={playlistChoice.url.includes('soundcloud.com') ? 'SoundCloud playlists not yet supported' : ''}
+                                >
+                                    <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Not Available' : 'Full Playlist'}</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )}
+            </div>
+        </>
     )
 }
 

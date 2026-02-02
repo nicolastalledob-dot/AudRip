@@ -1,3 +1,12 @@
+export interface Track {
+    path: string
+    title: string
+    artist: string
+    album: string
+    coverArt: string | null
+    duration: number
+}
+
 export interface AlbumArtData {
     source: 'thumbnail' | 'custom'
     imageData: string

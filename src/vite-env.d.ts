@@ -34,6 +34,8 @@ interface DownloadOptions {
 interface DownloadProgress {
     stage: 'downloading' | 'converting' | 'complete'
     percent: number
+    speed?: string | null
+    eta?: string | null
 }
 
 interface HistoryItem {

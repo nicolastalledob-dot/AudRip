@@ -1,133 +1,94 @@
 # AudRip
 
-Una aplicación de escritorio para descargar audio de **YouTube** y **SoundCloud** en formato MP3 o M4A, con edición de metadatos completa y recorte de audio.
+A modern desktop application to download high-quality audio from **YouTube** and **SoundCloud**, featuring advanced metadata editing, precise audio trimming, and a built-in music player.
 
-<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/5ce127c1-e3d7-457c-ac3b-fdfd7655a216" />
+<img width="900" alt="AudRip UI" src="https://github.com/user-attachments/assets/5ce127c1-e3d7-457c-ac3b-fdfd7655a216" />
 
-<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/e38eeb87-f6af-4aa7-8ab8-996579ef3e61" />
+---
 
-<img width="480" height="405" alt="image" src="https://github.com/user-attachments/assets/f195855f-2d61-4b59-97ff-9b4e3d4b6d0f" />
+## ✨ Features
 
-<img width="480" height="405" alt="Screenshot 2026-01-05 at 4 48 01 PM" src="https://github.com/user-attachments/assets/bf3eaea1-5be6-4806-8fe0-c424e38739c8" />
+### 🎧 Audio & Playback (New)
+*   **Media Session API Integration:** Native OS media controls (Play/Pause, Seek, Artwork on Lock Screen/Control Center).
+*   **Built-in Music Player:** High-quality playback with seamless loop (Repeat One) and Smart Shuffle.
+*   **Audio FX Panel:** Real-time Bass Boost, Reverb, Pitch Control, and Stereo Width adjustment.
+*   **Smart Playlists:** Create, rename, and manage playlists with custom cover art and drag-and-drop reordering.
+*   **Visualizer:** Dynamic audio visualization synced to your music.
 
-## 📥 Instalación
+### 📥 Downloading
+*   **Platform Support:**
+    *   📺 **YouTube**: Single videos and full playlists.
+    *   ☁️ **SoundCloud**: High-quality track downloads.
+*   **Smart Metadata:**
+    *   **Auto-Tagging:** Automatically detects Artist and Title from video names.
+    *   **Cover Art:** Extract frames from video, upload custom images, or use high-res thumbnails.
+*   **Tools:**
+    *   **Audio Trimmer:** Visual waveform editor to cut unwanted intros/outros before downloading.
+    *   **Format Choice:** MP3 or M4A (AAC) up to 320kbps.
 
-### macOS
-1. Descarga `AudRip-X.X.X-arm64.dmg` desde [Releases](https://github.com/nmtb97/AudRip/releases)
-2. Abre el DMG y arrastra AudRip a Aplicaciones
-3. **Primera vez**: Click derecho en AudRip → **Abrir** → Click en **Abrir** en el diálogo
-   > Esto es necesario porque la app no está firmada con Apple Developer ID
+### 💻 System Integration
+*   **Cross-Platform:** Native support for **macOS** (Silicon/Intel) and **Windows**.
+*   **Auto-Dependency Management:** 
+    *   **macOS:** Binaries (`ffmpeg`, `yt-dlp`) are bundled inside the app.
+    *   **Windows:** First-run auto-downloader fetches necessary components seamlessly.
+*   **Shortcuts:** Spacebar to Play/Pause (smartly disabled when typing).
 
-### Windows
-1. Descarga `AudRip Setup X.X.X.exe` desde [Releases](https://github.com/nmtb97/AudRip/releases)
-2. Ejecuta el instalador
-3. Al abrir por primera vez, acepta descargar los componentes requeridos (~100MB)
+---
 
-## ✨ Características
+## 🚀 Installation
 
-### Plataformas Soportadas
-- 📺 **YouTube**: Videos individuales y playlists completas
-- 🔊 **SoundCloud**: Canciones individuales (playlists próximamente)
+### 🍎 macOS
+1.  Download `AudRip-1.2.4-arm64.dmg` from [Releases](https://github.com/nmtb97/AudRip/releases).
+2.  Open the DMG and drag AudRip to **Applications**.
+3.  **First Run:** Right-click the app → **Open** → Click **Open** again (required for non-App Store apps).
 
-### Funcionalidades
-- 🎵 **Formatos**: MP3 o M4A (AAC) con alta calidad
-- ✏️ **Metadatos**: Edita título, artista y álbum antes de descargar
-- 🖼️ **Carátulas**: Selecciona frames del video, sube imágenes propias, o usa el thumbnail
-- ✂️ **Recorte**: Ajusta inicio y fin del audio con visualización de waveform
-- 📚 **Playlists**: Descarga playlists completas de YouTube con edición en lote
-- 📜 **Historial**: Accede a tus descargas recientes organizadas por fecha
-- 🎨 **UI Moderna**: Diseño glassmorphism con tema oscuro y animaciones fluidas
+### 🪟 Windows
+1.  Download `AudRip Setup 1.2.4.exe` (Installer) or `AudRip 1.2.4.exe` (Portable) from [Releases](https://github.com/nmtb97/AudRip/releases).
+2.  Run the application.
+3.  **One-Time Setup:** On first launch, if components are missing, a dialog will ask to auto-download them (~100MB). Click **Yes**.
 
-## 📋 Requisitos
+---
 
-### Para desarrollo
-- Node.js 18+
-- yt-dlp (instalado globalmente o en PATH)
-- ffmpeg (instalado globalmente o en PATH)
+## 🛠 Tech Stack
 
-### Instalación de dependencias externas
+*   **Electron** - Cross-platform desktop framework
+*   **React + TypeScript** - UI Library & Type safety
+*   **Vite** - High-performance build tooling
+*   **yt-dlp** - Core downloading engine
+*   **FFmpeg** - Audio processing and metadata embedding
+*   **WaveSurfer.js** - Waveform visualization
 
-**macOS:**
+---
+
+## ⌨️ Development
+
+### Prerequisites
+*   Node.js 18+
+*   npm or yarn
+
+### Setup
 ```bash
-brew install yt-dlp ffmpeg
-```
+# Clone the repository
+git clone https://github.com/nmtb97/AudRip.git
+cd AudRip
 
-**Windows:**
-```powershell
-winget install yt-dlp.yt-dlp
-winget install FFmpeg.FFmpeg
-```
-
-## 🚀 Desarrollo
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/tu-usuario/audrip.git
-cd audrip
-
-# Instalar dependencias
+# Install dependencies
 npm install
 
-# Iniciar en modo desarrollo
+# Start development server
 npm run dev
 ```
 
-## 📦 Empaquetado
-
+### Build for Distribution
 ```bash
-# Crear ejecutable para tu plataforma actual
-npm run electron:build
+# Build for macOS
+npm run electron:build -- --mac
+
+# Build for Windows
+npm run electron:build -- --win --x64
 ```
 
-Los ejecutables se guardarán en la carpeta `release/`.
+---
 
-## 📁 Estructura del Proyecto
-
-```
-├── electron/           # Proceso principal de Electron
-│   ├── main.ts        # Entry point, IPC handlers
-│   └── preload.ts     # API bridge al renderer
-├── src/               # Frontend React
-│   ├── components/    # Componentes UI
-│   │   ├── PlaylistEditor.tsx
-│   │   ├── DownloadHistory.tsx
-│   │   ├── AudioTrimmer.tsx
-│   │   ├── AlbumArtEditor.tsx
-│   │   └── ...
-│   ├── styles/        # CSS
-│   └── App.tsx        # Componente principal
-├── bin/               # Binarios bundled (yt-dlp, ffmpeg)
-│   ├── mac/
-│   └── win/
-└── release/           # Ejecutables empaquetados
-```
-
-## 📖 Uso
-
-### YouTube
-1. **Pegar URL**: Copia un link de YouTube (video o playlist)
-2. **Seleccionar**: Si es una playlist, elige descargar un video o toda la playlist
-3. **Editar**: Modifica metadatos, selecciona carátula, ajusta recorte
-4. **Descargar**: Click en "Download Now"
-
-### SoundCloud
-1. **Pegar URL**: Copia el link de una canción de SoundCloud
-2. **Editar**: Modifica los metadatos como desees
-3. **Descargar**: Click en "Download Now"
-
-> **Nota**: Las playlists/sets de SoundCloud aún no están soportadas debido a limitaciones de la API.
-
-Los archivos se guardan en `~/Downloads/AudRip/`.
-
-## 🛠️ Tecnologías
-
-- **Electron** - Framework de aplicación desktop
-- **Vite** - Build tool con HMR
-- **React + TypeScript** - UI y tipado
-- **yt-dlp** - Descarga de YouTube y SoundCloud
-- **FFmpeg** - Conversión, recorte y embedding de metadatos
-- **wavesurfer.js** - Visualización de waveform
-
-## 📄 Licencia
-
-MIT
+## 📄 License
+MIT © [Nicolas Talledo](https://github.com/nmtb97)
