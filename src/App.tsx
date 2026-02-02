@@ -4,7 +4,7 @@ import UrlInput from './components/UrlInput'
 import DownloadHistory from './components/DownloadHistory'
 import PlaylistEditor from './components/PlaylistEditor'
 import MusicPlayer from './components/MusicPlayer'
-import SettingsModal, { Settings } from './components/SettingsModal'
+import SettingsModal, { Settings, DEFAULT_ACCENT_COLOR } from './components/SettingsModal'
 import M4AConverter from './components/M4AConverter'
 import { PlaylistItem, Track } from './types'
 
@@ -43,7 +43,9 @@ function App() {
         coverArtRatio: '16:9',
         downloadFolder: '',
         musicPlayerFolder: '',
-        mp3OutputFolder: ''
+        mp3OutputFolder: '',
+        accentColor: DEFAULT_ACCENT_COLOR,
+        theme: 'dark'
     })
 
     const [downloadState, setDownloadState] = useState<DownloadState>({ stage: 'idle', percent: 0 })
@@ -112,6 +114,76 @@ function App() {
             window.electronAPI.saveSettings(settings)
         }
     }, [settings, isSettingsLoaded])
+
+    // Apply custom accent color & theme to CSS variables
+    useEffect(() => {
+        const hexToRgb = (hex: string) => {
+            const r = parseInt(hex.slice(1, 3), 16)
+            const g = parseInt(hex.slice(3, 5), 16)
+            const b = parseInt(hex.slice(5, 7), 16)
+            return { r, g, b }
+        }
+
+        const darken = (r: number, g: number, b: number, pct: number) => ({
+            r: Math.round(r * (1 - pct / 100)),
+            g: Math.round(g * (1 - pct / 100)),
+            b: Math.round(b * (1 - pct / 100))
+        })
+
+        const rgbToHex = (r: number, g: number, b: number) =>
+            '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+
+        const root = document.documentElement.style
+
+        // Accent color
+        const accentHex = settings.accentColor || DEFAULT_ACCENT_COLOR
+        const accent = hexToRgb(accentHex)
+        const secondary = darken(accent.r, accent.g, accent.b, 20)
+        const tertiary = darken(accent.r, accent.g, accent.b, 35)
+
+        root.setProperty('--accent-rgb', `${accent.r}, ${accent.g}, ${accent.b}`)
+        root.setProperty('--accent-primary', accentHex)
+        root.setProperty('--accent-secondary', rgbToHex(secondary.r, secondary.g, secondary.b))
+        root.setProperty('--accent-tertiary', rgbToHex(tertiary.r, tertiary.g, tertiary.b))
+        root.setProperty('--accent-success', accentHex)
+        root.setProperty('--shadow-glow', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.3)`)
+
+        // Theme
+        const isLight = settings.theme === 'light'
+        if (isLight) {
+            root.setProperty('--bg-primary', '#f0f0f0')
+            root.setProperty('--bg-secondary', '#e4e4e4')
+            root.setProperty('--bg-tertiary', '#d8d8d8')
+            root.setProperty('--bg-glass', 'rgba(240, 240, 240, 0.85)')
+            root.setProperty('--bg-glass-hover', 'rgba(228, 228, 228, 0.9)')
+            root.setProperty('--bg-frosted', 'rgba(235, 235, 238, 0.95)')
+            root.setProperty('--text-primary', '#111111')
+            root.setProperty('--text-secondary', '#555555')
+            root.setProperty('--text-muted', '#888888')
+            root.setProperty('--overlay-rgb', '0, 0, 0')
+            root.setProperty('--shadow-sm', '0 2px 8px rgba(0, 0, 0, 0.1)')
+            root.setProperty('--shadow-md', '0 4px 16px rgba(0, 0, 0, 0.12)')
+            root.setProperty('--border-glass', '1px solid rgba(0, 0, 0, 0.08)')
+            root.setProperty('--player-bg-brightness', '1.3')
+            root.setProperty('--player-bg-opacity', '0.15')
+        } else {
+            root.setProperty('--bg-primary', '#000000')
+            root.setProperty('--bg-secondary', '#0a0a0a')
+            root.setProperty('--bg-tertiary', '#141414')
+            root.setProperty('--bg-glass', 'rgba(20, 20, 20, 0.8)')
+            root.setProperty('--bg-glass-hover', 'rgba(30, 30, 30, 0.9)')
+            root.setProperty('--bg-frosted', 'rgba(10, 10, 12, 0.95)')
+            root.setProperty('--text-primary', '#ffffff')
+            root.setProperty('--text-secondary', '#888888')
+            root.setProperty('--text-muted', '#555555')
+            root.setProperty('--overlay-rgb', '255, 255, 255')
+            root.setProperty('--shadow-sm', '0 2px 8px rgba(0, 0, 0, 0.5)')
+            root.setProperty('--shadow-md', '0 4px 16px rgba(0, 0, 0, 0.6)')
+            root.setProperty('--border-glass', '1px solid rgba(255, 255, 255, 0.08)')
+            root.setProperty('--player-bg-brightness', '0.4')
+            root.setProperty('--player-bg-opacity', '0.6')
+        }
+    }, [settings.accentColor, settings.theme])
 
     const abortDownloadRef = useRef(false)
     const currentDownloadIdRef = useRef<string | null>(null)
@@ -660,7 +732,7 @@ function App() {
                                     </div>
                                 ) : downloadState.stage === 'error' ? (
                                     <div style={{ width: '100%', textAlign: 'center' }}>
-                                        <div style={{ color: '#ff4444', marginBottom: '8px', fontSize: '13px', padding: '0 10px' }}>
+                                        <div style={{ color: 'var(--accent-error)', marginBottom: '8px', fontSize: '13px', padding: '0 10px' }}>
                                             {downloadState.error}
                                         </div>
                                         <button className="secondary-button" onClick={handleReset} style={{ width: '100%' }}>

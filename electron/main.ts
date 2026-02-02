@@ -4,6 +4,7 @@ import { join } from 'path'
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir, platform } from 'os'
+import { createHash } from 'crypto'
 
 // Register scheme as privileged
 const { protocol } = require('electron')
@@ -378,15 +379,21 @@ async function promptAndDownloadBinaries(missing: string[]): Promise<boolean> {
     return false
 }
 
-// Read saved settings from disk
+// Cached settings to avoid repeated synchronous reads
+let cachedSettings: { downloadFolder?: string, musicPlayerFolder?: string, mp3OutputFolder?: string } | null = null
+
+// Read saved settings from disk (cached)
 function loadSettings(): { downloadFolder?: string, musicPlayerFolder?: string, mp3OutputFolder?: string } {
+    if (cachedSettings) return cachedSettings
     try {
         const settingsPath = join(app.getPath('userData'), 'settings.json')
         if (existsSync(settingsPath)) {
-            return JSON.parse(readFileSync(settingsPath, 'utf-8'))
+            cachedSettings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+            return cachedSettings!
         }
     } catch { }
-    return {}
+    cachedSettings = {}
+    return cachedSettings
 }
 
 // Get download directory (uses custom setting if set)
@@ -1190,6 +1197,7 @@ ipcMain.handle('clear-history', async () => {
 ipcMain.handle('save-settings', async (_event, settings) => {
     const path = join(app.getPath('userData'), 'settings.json')
     writeFileSync(path, JSON.stringify(settings))
+    cachedSettings = settings
     return true
 })
 
@@ -1405,6 +1413,56 @@ ipcMain.handle('process-album-art', async (_event, options: {
     })
 })
 
+// --- Music metadata cache ---
+interface MusicCacheEntry {
+    mtime: number
+    title: string
+    artist: string
+    album: string
+    duration: number
+}
+
+function getMusicCachePath(): string {
+    return join(app.getPath('userData'), 'music-cache.json')
+}
+
+function loadMusicCache(): Record<string, MusicCacheEntry> {
+    try {
+        const cachePath = getMusicCachePath()
+        if (existsSync(cachePath)) {
+            return JSON.parse(readFileSync(cachePath, 'utf-8'))
+        }
+    } catch (e) {
+        console.error('[MusicCache] Failed to load cache:', e)
+    }
+    return {}
+}
+
+function saveMusicCache(cache: Record<string, MusicCacheEntry>): void {
+    try {
+        writeFileSync(getMusicCachePath(), JSON.stringify(cache))
+    } catch (e) {
+        console.error('[MusicCache] Failed to save cache:', e)
+    }
+}
+
+// Parallel executor with concurrency limit
+async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+    const results: T[] = new Array(tasks.length)
+    let index = 0
+
+    async function worker() {
+        while (index < tasks.length) {
+            const i = index++
+            results[i] = await tasks[i]()
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker())
+    await Promise.all(workers)
+    return results
+}
+
 // Get music library from music library folder
 ipcMain.handle('get-music-library', async () => {
     const downloadDir = getMusicLibraryDir()
@@ -1420,45 +1478,61 @@ ipcMain.handle('get-music-library', async () => {
             return audioExtensions.includes(ext)
         })
 
-        const tracks = []
+        // Load metadata cache
+        const cache = loadMusicCache()
+        const updatedCache: Record<string, MusicCacheEntry> = {}
+
+        // Separate into cache hits and misses
+        const cacheHits: { file: string, filePath: string, entry: MusicCacheEntry }[] = []
+        const cacheMisses: { file: string, filePath: string }[] = []
 
         for (const file of audioFiles) {
             const filePath = join(downloadDir, file)
-
             try {
-                // Get metadata using ffprobe
-                const metadata = await new Promise<{
-                    title: string
-                    artist: string
-                    album: string
-                    duration: number
-                    coverArt: string | null
-                }>((resolve) => {
+                const stat = statSync(filePath)
+                const mtime = stat.mtimeMs
+                const cached = cache[filePath]
+
+                if (cached && cached.mtime === mtime) {
+                    cacheHits.push({ file, filePath, entry: cached })
+                    updatedCache[filePath] = cached
+                } else {
+                    cacheMisses.push({ file, filePath })
+                }
+            } catch {
+                cacheMisses.push({ file, filePath })
+            }
+        }
+
+        console.log(`[MusicLibrary] ${cacheHits.length} cache hits, ${cacheMisses.length} cache misses`)
+
+        // Process cache misses in parallel (up to 8 concurrent ffprobe)
+        const probeResults = await parallelLimit(
+            cacheMisses.map(({ file, filePath }) => () => {
+                return new Promise<{ file: string, filePath: string, meta: MusicCacheEntry }>((resolve) => {
+                    let mtime = 0
+                    try { mtime = statSync(filePath).mtimeMs } catch { }
+
                     const args = [
                         '-v', 'quiet',
                         '-print_format', 'json',
                         '-show_format',
-                        '-show_streams',
                         filePath
                     ]
 
                     const proc = spawn(ffprobeCmd, args)
                     let stdout = ''
 
-                    proc.stdout.on('data', (data) => {
+                    proc.stdout.on('data', (data: Buffer) => {
                         stdout += data.toString()
                     })
 
-                    proc.on('close', async (code) => {
+                    proc.on('close', (code: number | null) => {
                         if (code !== 0) {
-                            // Fallback to filename parsing
                             const nameWithoutExt = file.slice(0, file.lastIndexOf('.'))
                             resolve({
-                                title: nameWithoutExt,
-                                artist: 'Unknown Artist',
-                                album: '',
-                                duration: 0,
-                                coverArt: null
+                                file, filePath,
+                                meta: { mtime, title: nameWithoutExt, artist: 'Unknown Artist', album: '', duration: 0 }
                             })
                             return
                         }
@@ -1468,78 +1542,130 @@ ipcMain.handle('get-music-library', async () => {
                             const format = info.format || {}
                             const tags = format.tags || {}
 
-                            // Try to extract cover art
-                            let coverArt: string | null = null
-                            const videoStream = (info.streams || []).find(
-                                (s: { codec_type: string; codec_name: string }) =>
-                                    s.codec_type === 'video' && s.codec_name !== 'mjpeg' || s.codec_name === 'mjpeg'
-                            )
-
-                            if (videoStream) {
-                                // Extract cover art using ffmpeg
-                                const ffmpeg = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
-                                const ffmpegCmd = existsSync(ffmpeg) ? ffmpeg : 'ffmpeg'
-                                const tempDir = join(app.getPath('temp'), 'audrip-covers')
-                                if (!existsSync(tempDir)) {
-                                    mkdirSync(tempDir, { recursive: true })
-                                }
-                                const coverPath = join(tempDir, `cover_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`)
-
-                                try {
-                                    await new Promise<void>((res) => {
-                                        const extractProc = spawn(ffmpegCmd, [
-                                            '-i', filePath,
-                                            '-an',
-                                            '-vcodec', 'mjpeg',
-                                            '-vframes', '1',
-                                            '-y',
-                                            coverPath
-                                        ])
-                                        extractProc.on('close', () => res())
-                                        extractProc.on('error', () => res())
-                                    })
-
-                                    if (existsSync(coverPath)) {
-                                        const imageData = readFileSync(coverPath)
-                                        coverArt = `data:image/jpeg;base64,${imageData.toString('base64')}`
-                                        try { unlinkSync(coverPath) } catch { }
-                                    }
-                                } catch { }
-                            }
-
                             resolve({
-                                title: tags.title || tags.TITLE || file.slice(0, file.lastIndexOf('.')),
-                                artist: tags.artist || tags.ARTIST || 'Unknown Artist',
-                                album: tags.album || tags.ALBUM || '',
-                                duration: parseFloat(format.duration) || 0,
-                                coverArt
+                                file, filePath,
+                                meta: {
+                                    mtime,
+                                    title: tags.title || tags.TITLE || file.slice(0, file.lastIndexOf('.')),
+                                    artist: tags.artist || tags.ARTIST || 'Unknown Artist',
+                                    album: tags.album || tags.ALBUM || '',
+                                    duration: parseFloat(format.duration) || 0
+                                }
                             })
-                        } catch (e) {
+                        } catch {
                             const nameWithoutExt = file.slice(0, file.lastIndexOf('.'))
                             resolve({
-                                title: nameWithoutExt,
-                                artist: 'Unknown Artist',
-                                album: '',
-                                duration: 0,
-                                coverArt: null
+                                file, filePath,
+                                meta: { mtime, title: nameWithoutExt, artist: 'Unknown Artist', album: '', duration: 0 }
                             })
                         }
                     })
-                })
 
-                tracks.push({
-                    path: filePath,
-                    ...metadata
+                    proc.on('error', () => {
+                        const nameWithoutExt = file.slice(0, file.lastIndexOf('.'))
+                        resolve({
+                            file, filePath,
+                            meta: { mtime, title: nameWithoutExt, artist: 'Unknown Artist', album: '', duration: 0 }
+                        })
+                    })
                 })
-            } catch (e) {
-                console.error(`Failed to process ${file}:`, e)
-            }
+            }),
+            8
+        )
+
+        // Add probe results to cache
+        for (const result of probeResults) {
+            updatedCache[result.filePath] = result.meta
         }
+
+        // Save updated cache
+        saveMusicCache(updatedCache)
+
+        // Build tracks array (cache hits + misses, all with coverArt: null for lazy loading)
+        const tracks = [
+            ...cacheHits.map(({ filePath, entry }) => ({
+                path: filePath,
+                title: entry.title,
+                artist: entry.artist,
+                album: entry.album,
+                duration: entry.duration,
+                coverArt: null as string | null
+            })),
+            ...probeResults.map((result) => ({
+                path: result.filePath,
+                title: result.meta.title,
+                artist: result.meta.artist,
+                album: result.meta.album,
+                duration: result.meta.duration,
+                coverArt: null as string | null
+            }))
+        ]
+
+        // Sort by filename to maintain consistent order
+        tracks.sort((a, b) => a.path.localeCompare(b.path))
 
         return tracks
     } catch (e) {
         console.error('Failed to read music library:', e)
         return []
+    }
+})
+
+// Get cover art for a single track (lazy loaded, cached to disk)
+ipcMain.handle('get-track-cover-art', async (_event, filePath: string) => {
+    if (!filePath || !existsSync(filePath)) return null
+
+    const coversDir = join(app.getPath('userData'), 'covers')
+    if (!existsSync(coversDir)) {
+        mkdirSync(coversDir, { recursive: true })
+    }
+
+    // Cache key based on file path + mtime
+    let mtime = 0
+    try { mtime = statSync(filePath).mtimeMs } catch { return null }
+
+    const hash = createHash('md5').update(`${filePath}:${mtime}`).digest('hex')
+    const cachedPath = join(coversDir, `${hash}.jpg`)
+
+    // Return from disk cache if available
+    if (existsSync(cachedPath)) {
+        try {
+            const imageData = readFileSync(cachedPath)
+            return `data:image/jpeg;base64,${imageData.toString('base64')}`
+        } catch { }
+    }
+
+    // Extract cover art using ffmpeg
+    const ffmpeg = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+    const ffmpegCmd = existsSync(ffmpeg) ? ffmpeg : 'ffmpeg'
+
+    try {
+        const coverArt = await new Promise<string | null>((resolve) => {
+            const extractProc = spawn(ffmpegCmd, [
+                '-i', filePath,
+                '-an',
+                '-vcodec', 'mjpeg',
+                '-vframes', '1',
+                '-y',
+                cachedPath
+            ])
+            extractProc.on('close', (code) => {
+                if (code === 0 && existsSync(cachedPath)) {
+                    try {
+                        const imageData = readFileSync(cachedPath)
+                        resolve(`data:image/jpeg;base64,${imageData.toString('base64')}`)
+                    } catch {
+                        resolve(null)
+                    }
+                } else {
+                    resolve(null)
+                }
+            })
+            extractProc.on('error', () => resolve(null))
+        })
+        return coverArt
+    } catch {
+        return null
     }
 })
 

@@ -158,6 +158,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         coverArt: string | null
     }[]> => ipcRenderer.invoke('get-music-library'),
 
+    getTrackCoverArt: (filePath: string): Promise<string | null> =>
+        ipcRenderer.invoke('get-track-cover-art', filePath),
+
     // FX Presets API
     getFxPresets: (): Promise<any[]> =>
         ipcRenderer.invoke('get-fx-presets'),
@@ -234,6 +237,7 @@ declare global {
                 duration: number
                 coverArt: string | null
             }[]>
+            getTrackCoverArt: (filePath: string) => Promise<string | null>
             getPlaylists: () => Promise<Playlist[]>
             savePlaylist: (playlist: Playlist) => Promise<{ success: boolean, playlists: Playlist[] }>
             deletePlaylist: (playlistId: string) => Promise<{ success: boolean, playlists: Playlist[] }>

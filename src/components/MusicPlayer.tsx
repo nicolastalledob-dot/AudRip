@@ -84,6 +84,28 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const shuffleHistoryRef = useRef<number[]>([])
     const [sortBy, setSortBy] = useState<'default' | 'title' | 'artist' | 'duration' | 'recent'>('default')
 
+    // --- COVER ART LAZY LOADING ---
+    const [coverArtCache, setCoverArtCache] = useState<Record<string, string | null>>({})
+    const coverArtLoadingRef = useRef<Set<string>>(new Set())
+    const [displayedArt, setDisplayedArt] = useState<string | null>(null)
+
+    const fetchCoverArt = useCallback(async (filePath: string) => {
+        if (coverArtLoadingRef.current.has(filePath)) return
+        coverArtLoadingRef.current.add(filePath)
+        try {
+            const art = await (window.electronAPI as any).getTrackCoverArt(filePath)
+            setCoverArtCache(prev => ({ ...prev, [filePath]: art }))
+        } catch {
+            setCoverArtCache(prev => ({ ...prev, [filePath]: null }))
+        }
+    }, [])
+
+    // Helper to get cover art for a track (from track data or lazy cache)
+    const getTrackCoverArt = useCallback((track: Track | null | undefined): string | null => {
+        if (!track) return null
+        if (track.coverArt) return track.coverArt
+        return coverArtCache[track.path] ?? null
+    }, [coverArtCache])
 
     // --- AUDIO EFFECTS STATE ---
     const [showFx, setShowFx] = useState(false)
@@ -264,6 +286,35 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const stereoWidthGainNodeRef = useRef<GainNode | null>(null) // Haas
 
     const currentTrack = currentTrackIndex >= 0 ? tracks[currentTrackIndex] : null
+
+    // Fetch cover art for current track
+    useEffect(() => {
+        if (!currentTrack || currentTrack.coverArt) return
+        if (coverArtCache[currentTrack.path] !== undefined) return
+        fetchCoverArt(currentTrack.path)
+    }, [currentTrack?.path])
+
+    // Update displayed art only when the new track's art is resolved
+    useEffect(() => {
+        if (!currentTrack) { setDisplayedArt(null); return }
+        const art = getTrackCoverArt(currentTrack)
+        // Art is available (loaded or inline) — update immediately
+        if (art) { setDisplayedArt(art); return }
+        // Art was explicitly fetched and confirmed null — no art for this track
+        if (coverArtCache[currentTrack.path] === null) { setDisplayedArt(null); return }
+        // Otherwise: still loading — keep previous displayedArt
+    }, [currentTrack?.path, coverArtCache, getTrackCoverArt])
+
+    // Fetch cover art for active playlist's first 4 tracks (for auto-cover grid)
+    useEffect(() => {
+        if (!activePlaylist) return
+        const playlistTracks = tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).slice(0, 4)
+        for (const t of playlistTracks) {
+            if (!t.coverArt && coverArtCache[t.path] === undefined) {
+                fetchCoverArt(t.path)
+            }
+        }
+    }, [activePlaylist?.id, tracks])
 
     // Helper: Create Reverb Impulse
     const createReverbImpulse = (ctx: AudioContext) => {
@@ -877,14 +928,15 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     // Media Session API Support
     useEffect(() => {
         if ('mediaSession' in navigator && currentTrack) {
+            const art = getTrackCoverArt(currentTrack)
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: currentTrack.title,
                 artist: currentTrack.artist,
                 album: currentTrack.album,
-                artwork: currentTrack.coverArt ? [{ src: currentTrack.coverArt, sizes: '512x512', type: 'image/jpeg' }] : []
+                artwork: art ? [{ src: art, sizes: '512x512', type: 'image/jpeg' }] : []
             })
         }
-    }, [currentTrack])
+    }, [currentTrack, coverArtCache])
 
     useEffect(() => {
         if ('mediaSession' in navigator) {
@@ -1120,10 +1172,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     return (
         <div className="music-player">
             <div className="player-background" style={{
-                backgroundImage: (activePlaylist?.coverArt || currentTrack?.coverArt)
-                    ? `url(${activePlaylist?.coverArt || currentTrack?.coverArt})`
-                    : (activePlaylist && tracks.find(t => activePlaylist.trackPaths[0] === t.path)?.coverArt)
-                        ? `url(${tracks.find(t => activePlaylist.trackPaths[0] === t.path)?.coverArt})`
+                backgroundImage: (activePlaylist?.coverArt || displayedArt)
+                    ? `url(${activePlaylist?.coverArt || displayedArt})`
+                    : (activePlaylist && getTrackCoverArt(tracks.find(t => activePlaylist.trackPaths[0] === t.path)))
+                        ? `url(${getTrackCoverArt(tracks.find(t => activePlaylist.trackPaths[0] === t.path))})`
                         : 'none'
             }} />
 
@@ -1135,15 +1187,16 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                 <img src={activePlaylist.coverArt} alt={activePlaylist.name} />
                             ) : (
                                 <div className="auto-cover-large">
-                                    {tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => (
-                                        t.coverArt ? (
-                                            <img key={i} src={t.coverArt} alt="" />
+                                    {tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => {
+                                        const art = getTrackCoverArt(t)
+                                        return art ? (
+                                            <img key={i} src={art} alt="" />
                                         ) : (
                                             <div key={i} className="no-cover-cell-large">
                                                 <MusicIcon size={32} strokeWidth={1} style={{ opacity: 0.2 }} />
                                             </div>
                                         )
-                                    ))}
+                                    })}
                                     {/* Fill empty cells if playlist has < 4 tracks */}
                                     {Array.from({ length: Math.max(0, 4 - tracks.filter(t => activePlaylist.trackPaths.includes(t.path)).length) }).map((_, i) => (
                                         <div key={`empty-${i}`} className="no-cover-cell-large">
@@ -1152,8 +1205,8 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                     ))}
                                 </div>
                             )
-                        ) : currentTrack?.coverArt ? (
-                            <img src={currentTrack.coverArt} alt="Album Art" />
+                        ) : displayedArt ? (
+                            <img src={displayedArt} alt="Album Art" />
                         ) : (
                             <div className="no-art">
                                 <MusicIcon size={80} strokeWidth={1} style={{ opacity: 0.3 }} />
@@ -1411,10 +1464,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                 style={{
                                     width: '100%',
                                     padding: '10px 12px',
-                                    background: 'rgba(255,255,255,0.08)',
-                                    border: '1px solid rgba(255,255,255,0.15)',
+                                    background: 'rgba(var(--overlay-rgb), 0.08)',
+                                    border: '1px solid rgba(var(--overlay-rgb), 0.15)',
                                     borderRadius: 8,
-                                    color: 'white',
+                                    color: 'var(--text-primary)',
                                     fontSize: 14,
                                     outline: 'none',
                                     marginBottom: 12
@@ -1425,10 +1478,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                     onClick={() => setShowPresetNameModal(false)}
                                     style={{
                                         padding: '8px 16px',
-                                        background: 'rgba(255,255,255,0.1)',
+                                        background: 'rgba(var(--overlay-rgb), 0.1)',
                                         border: 'none',
                                         borderRadius: 6,
-                                        color: 'white',
+                                        color: 'var(--text-primary)',
                                         cursor: 'pointer'
                                     }}
                                 >Cancel</button>
@@ -1437,10 +1490,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                     disabled={!presetNameInput.trim()}
                                     style={{
                                         padding: '8px 16px',
-                                        background: presetNameInput.trim() ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                                        background: presetNameInput.trim() ? 'var(--accent-primary)' : 'rgba(var(--overlay-rgb), 0.1)',
                                         border: 'none',
                                         borderRadius: 6,
-                                        color: 'white',
+                                        color: presetNameInput.trim() ? 'white' : 'var(--text-primary)',
                                         cursor: presetNameInput.trim() ? 'pointer' : 'default',
                                         opacity: presetNameInput.trim() ? 1 : 0.5
                                     }}
@@ -1545,7 +1598,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                 onChange={(e) => setVolume(parseFloat(e.target.value))}
                                 className="volume-slider"
                                 style={{
-                                    background: `linear-gradient(to right, var(--accent-primary) ${volume * 100}%, rgba(255, 255, 255, 0.1) ${volume * 100}%)`
+                                    background: `linear-gradient(to right, var(--accent-primary) ${volume * 100}%, rgba(var(--overlay-rgb), 0.1) ${volume * 100}%)`
                                 }}
                             />
                         </div>
@@ -1592,15 +1645,16 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                                 <img src={pl.coverArt} alt={pl.name} />
                                             ) : (
                                                 <div className="auto-cover">
-                                                    {tracks.filter(t => pl.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => (
-                                                        t.coverArt ? (
-                                                            <img key={i} src={t.coverArt} alt="" />
+                                                    {tracks.filter(t => pl.trackPaths.includes(t.path)).slice(0, 4).map((t, i) => {
+                                                        const art = getTrackCoverArt(t)
+                                                        return art ? (
+                                                            <img key={i} src={art} alt="" />
                                                         ) : (
                                                             <div key={i} className="no-cover-cell">
                                                                 <MusicIcon size={20} />
                                                             </div>
                                                         )
-                                                    ))}
+                                                    })}
                                                 </div>
                                             )}
                                             {/* Overlay Checkmark if track is already in playlist */}
