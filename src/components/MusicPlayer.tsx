@@ -709,8 +709,9 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         highPass.connect(lowPass)
         lowPass.connect(bassFilter)
         bassFilter.connect(saturationShaper)
-        saturationShaper.connect(compressor)
-        compressor.connect(panner)
+        saturationShaper.connect(panner)
+        // Compressor removed from chain to prevent clipping
+        // compressor.connect(panner)
 
         const hub = panner // The processed "dry signal" hub
 

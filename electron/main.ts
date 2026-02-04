@@ -811,7 +811,21 @@ ipcMain.handle('download-audio', async (_event, options: {
         const ffmpegCmd = existsSync(ffmpegBin) ? ffmpegBin : 'ffmpeg'
 
         const downloadDir = getDownloadDir()
-        const safeTitle = options.metadata.title.replace(/[<>:"/\\|?*]/g, '_')
+
+        // Construct filename: Artist - Title - Album (if available)
+        const sanitize = (str: string) => str.replace(/[<>:"/\\|?*]/g, '_').trim()
+
+        const { title, artist, album } = options.metadata
+        let fileNameParts = []
+
+        if (artist) fileNameParts.push(sanitize(artist))
+        if (title) fileNameParts.push(sanitize(title))
+        if (album && album !== title) fileNameParts.push(sanitize(album)) // Avoid redundant album if same as title
+
+        // Fallback if empty (shouldn't happen)
+        const baseFilename = fileNameParts.length > 0 ? fileNameParts.join(' - ') : sanitize(options.metadata.title)
+
+        const safeTitle = baseFilename
         const outputPath = join(downloadDir, `${safeTitle}.${options.format}`)
 
         const tempId = options.id || Date.now().toString()

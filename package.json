@@ -1,6 +1,6 @@
 {
   "name": "audrip",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "description": "Download audio from YouTube and SoundCloud with metadata editing",
   "main": "dist-electron/main.js",
   "scripts": {
