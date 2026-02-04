@@ -5,18 +5,19 @@ interface CoverArtCube3DProps {
     src: string | null
     artist?: string
     album?: string
+    color?: string
     className?: string
 }
 
-function createBackTexture(artist: string, album?: string): THREE.CanvasTexture {
+function createBackTexture(artist: string, album?: string, bgColor: string = '#222222'): THREE.CanvasTexture {
     const size = 512
     const canvas = document.createElement('canvas')
     canvas.width = size
     canvas.height = size
     const ctx = canvas.getContext('2d')!
 
-    // Dark background matching side material
-    ctx.fillStyle = '#222222'
+    // Background matching material
+    ctx.fillStyle = bgColor
     ctx.fillRect(0, 0, size, size)
 
     ctx.textAlign = 'center'
@@ -52,13 +53,14 @@ function createBackTexture(artist: string, album?: string): THREE.CanvasTexture 
     return texture
 }
 
-export default function CoverArtCube3D({ src, artist, album, className = 'cover-art-3d' }: CoverArtCube3DProps) {
+export default function CoverArtCube3D({ src, artist, album, color, className = 'cover-art-3d' }: CoverArtCube3DProps) {
     const mountRef = useRef<HTMLDivElement>(null)
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
     const frameRef = useRef<number>(0)
     const meshRef = useRef<THREE.Mesh | null>(null)
     const materialRef = useRef<THREE.MeshStandardMaterial | null>(null)
     const backMaterialRef = useRef<THREE.MeshStandardMaterial | null>(null)
+    const sideMaterialRef = useRef<THREE.MeshStandardMaterial | null>(null)
 
     // Setup scene once
     useEffect(() => {
@@ -112,8 +114,11 @@ export default function CoverArtCube3D({ src, artist, album, className = 'cover-
             metalness: 0.1,
             roughness: 0.8
         })
+
         materialRef.current = frontMaterial
         backMaterialRef.current = backMaterial
+        sideMaterialRef.current = sideMaterial
+
         // BoxGeometry face order: +X, -X, +Y, -Y, +Z (front), -Z (back)
         const materials = [sideMaterial, sideMaterial, sideMaterial, sideMaterial, frontMaterial, backMaterial]
         const mesh = new THREE.Mesh(geometry, materials)
@@ -312,7 +317,7 @@ export default function CoverArtCube3D({ src, artist, album, className = 'cover-
         }
 
         if (artist) {
-            const texture = createBackTexture(artist, album)
+            const texture = createBackTexture(artist, album, color || '#222222')
             material.map = texture
             material.color.set(0xffffff)
             material.needsUpdate = true
@@ -320,7 +325,22 @@ export default function CoverArtCube3D({ src, artist, album, className = 'cover-
             material.color.set(0x222222)
             material.needsUpdate = true
         }
-    }, [artist, album])
+        material.needsUpdate = true
+    }, [artist, album, color])
+
+    // Update side and back colors when prop changes
+    useEffect(() => {
+        const sideMat = sideMaterialRef.current
+        const backMat = backMaterialRef.current
+
+        if (sideMat && color) {
+            sideMat.color.set(color)
+        }
+
+        if (backMat && !backMat.map && color) {
+            backMat.color.set(color)
+        }
+    }, [color])
 
     return <div ref={mountRef} className={className} />
 }

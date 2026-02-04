@@ -18,6 +18,7 @@ interface PlaybackState {
     volume?: number
     theme?: string
     accentColor?: string
+    artColor?: string | null
 }
 
 const MarqueeMini = ({ text, className }: { text: string, className?: string }) => {
@@ -350,7 +351,7 @@ export default function MiniPlayer() {
                 </div>
             ) : (
                 <>
-                    <CoverArtCube3D src={state.coverArt} artist={state.artist} album={state.album} className="mini-player-art-3d" />
+                    <CoverArtCube3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" />
                     <div className="mini-player-info">
                         <MarqueeMini text={state.title} className="mini-player-title" />
                         <MarqueeMini text={state.artist} className="mini-player-artist" />

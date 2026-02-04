@@ -254,6 +254,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     const [coverArtCache, setCoverArtCache] = useState<Record<string, string | null>>({})
     const coverArtLoadingRef = useRef<Set<string>>(new Set())
     const [displayedArt, setDisplayedArt] = useState<string | null>(null)
+    const [artColor, setArtColor] = useState<string | null>(null)
 
     const fetchCoverArt = useCallback(async (filePath: string) => {
         if (coverArtLoadingRef.current.has(filePath)) return
@@ -586,6 +587,17 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
 
         return () => { cancelled = true }
     }, [displayedArt, adaptiveColors])
+
+    // Extract dominant color from album art for 3D cube
+    useEffect(() => {
+        if (!displayedArt) { setArtColor(null); return }
+        let cancelled = false
+        analyzeAlbumArt(displayedArt).then(result => {
+            if (cancelled) return
+            setArtColor(result?.color || null)
+        })
+        return () => { cancelled = true }
+    }, [displayedArt])
 
     // Fetch cover art for active playlist's first 4 tracks (for auto-cover grid)
     useEffect(() => {
@@ -1622,9 +1634,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             duration,
             volume,
             theme,
-            accentColor
+            accentColor,
+            artColor
         })
-    }, [currentTrack?.path, isPlaying, Math.floor(currentTime), duration, volume, theme, accentColor])
+    }, [currentTrack?.path, isPlaying, Math.floor(currentTime), duration, volume, theme, accentColor, artColor])
 
     // Listen for mini player commands
     useEffect(() => {
@@ -1962,7 +1975,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                 </div>
                             )
                         ) : displayedArt ? (
-                            <CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} />
+                            <CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} />
                         ) : (
                             <div className="no-art">
                                 <MusicIcon size={80} strokeWidth={1} style={{ opacity: 0.3 }} />
