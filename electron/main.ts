@@ -2250,14 +2250,17 @@ ipcMain.handle('check-for-updates', async () => {
         autoUpdater.autoDownload = false
         const result = await autoUpdater.checkForUpdates()
 
+        const currentVersion = app.getVersion()
+
         // If result is null, it means no update or error caught internally
         if (!result) {
-            return { updateAvailable: false }
+            return { updateAvailable: false, currentVersion }
         }
 
         return {
-            updateAvailable: result.updateInfo.version !== app.getVersion(),
+            updateAvailable: result.updateInfo.version !== currentVersion,
             version: result.updateInfo.version,
+            currentVersion: currentVersion,
             releaseNotes: Array.isArray(result.updateInfo.releaseNotes)
                 ? result.updateInfo.releaseNotes.map(n => typeof n === 'string' ? n : n.note).join('\n')
                 : (result.updateInfo.releaseNotes || '')
@@ -2265,11 +2268,12 @@ ipcMain.handle('check-for-updates', async () => {
     } catch (error) {
         console.error('[AutoUpdater] Check failed:', error)
         const errStr = String(error)
+        const currentVersion = app.getVersion()
         // Suppress common "no update found" errors to avoid alerting user unnecessarily
-        if (errStr.includes('Unable to find latest version') || errStr.includes('404') || errStr.includes('406')) {
-            return { updateAvailable: false }
+        if (errStr.includes('Unable to find latest version') || errStr.includes('404') || errStr.includes('406') || errStr.includes('Cannot parse releases feed')) {
+            return { updateAvailable: false, currentVersion }
         }
-        return { updateAvailable: false, error: errStr }
+        return { updateAvailable: false, error: errStr, currentVersion }
     }
 })
 

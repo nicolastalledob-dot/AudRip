@@ -133,7 +133,7 @@ interface Window {
             coverArt?: string
         }) => Promise<{ success: boolean }>
         // Auto-updater
-        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, releaseNotes?: string | null, error?: string }>
+        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, currentVersion?: string, releaseNotes?: string | null, error?: string }>
         downloadUpdate: () => Promise<{ success: boolean, error?: string }>
         installUpdate: () => Promise<void>
         onUpdateAvailable: (callback: (info: any) => void) => () => void

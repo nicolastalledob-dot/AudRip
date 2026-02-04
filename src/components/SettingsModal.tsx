@@ -215,6 +215,7 @@ function UpdateChecker() {
                 // If it's a GitHub API error about missing releases, just say up to date
                 if (result.error.includes('Unable to find latest version') || result.error.includes('HttpError: 404')) {
                     setStatus('uptodate')
+                    if (result.currentVersion) setUpdateInfo({ version: result.currentVersion })
                     setTimeout(() => setStatus('idle'), 3000)
                 } else {
                     setStatus('error')
@@ -222,6 +223,7 @@ function UpdateChecker() {
                 }
             } else if (!result.updateAvailable) {
                 setStatus('uptodate')
+                if (result.currentVersion) setUpdateInfo({ version: result.currentVersion })
                 setTimeout(() => setStatus('idle'), 3000)
             }
         } catch (e) {
@@ -262,7 +264,7 @@ function UpdateChecker() {
 
                 {status === 'uptodate' && (
                     <div className="update-status success">
-                        <Check size={14} /> Application is up to date
+                        <Check size={14} /> Application is up to date {updateInfo?.version ? `(v${updateInfo.version})` : ''}
                     </div>
                 )}
 
