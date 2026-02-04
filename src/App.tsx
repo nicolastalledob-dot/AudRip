@@ -69,13 +69,7 @@ function App() {
     const [isLibraryLoaded, setIsLibraryLoaded] = useState(false)
     const [showSplash, setShowSplash] = useState(true)
 
-    // Auto-update state
-    const [updateState, setUpdateState] = useState<{
-        status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error'
-        version?: string
-        progress?: number
-        error?: string
-    }>({ status: 'idle' })
+
 
     const isAppReady = isSettingsLoaded && isLibraryLoaded
 
@@ -125,47 +119,7 @@ function App() {
         }
     }, [isAppReady])
 
-    // Auto-update: check on startup and listen for events
-    useEffect(() => {
-        const api = window.electronAPI as any
-        if (!api?.checkForUpdates) return
 
-        const timer = setTimeout(() => {
-            api.checkForUpdates().then((result: any) => {
-                if (result?.updateAvailable) {
-                    setUpdateState({ status: 'available', version: result.version })
-                }
-            }).catch(() => {})
-        }, 5000)
-
-        const cleanups: (() => void)[] = []
-
-        if (api.onUpdateAvailable) {
-            cleanups.push(api.onUpdateAvailable((info: any) => {
-                setUpdateState({ status: 'available', version: info?.version })
-            }))
-        }
-        if (api.onUpdateProgress) {
-            cleanups.push(api.onUpdateProgress((progress: any) => {
-                setUpdateState(prev => ({ ...prev, status: 'downloading', progress: progress?.percent }))
-            }))
-        }
-        if (api.onUpdateDownloaded) {
-            cleanups.push(api.onUpdateDownloaded(() => {
-                setUpdateState(prev => ({ ...prev, status: 'downloaded' }))
-            }))
-        }
-        if (api.onUpdateError) {
-            cleanups.push(api.onUpdateError((error: string) => {
-                setUpdateState(prev => ({ ...prev, status: 'error', error }))
-            }))
-        }
-
-        return () => {
-            clearTimeout(timer)
-            cleanups.forEach(fn => fn())
-        }
-    }, [])
 
     // Refresh music library (called by MusicPlayer or after download)
     const refreshMusicLibrary = useCallback(async () => {
@@ -297,10 +251,10 @@ function App() {
 
         // Cancel all active downloads
         const cancelPromises = Array.from(activeDownloadIdsRef.current.keys()).map(id =>
-            window.electronAPI.cancelDownload(id).catch(() => {})
+            window.electronAPI.cancelDownload(id).catch(() => { })
         )
         if (currentDownloadIdRef.current) {
-            cancelPromises.push(window.electronAPI.cancelDownload(currentDownloadIdRef.current).catch(() => {}))
+            cancelPromises.push(window.electronAPI.cancelDownload(currentDownloadIdRef.current).catch(() => { }))
         }
         await Promise.all(cancelPromises)
 
@@ -846,55 +800,7 @@ function App() {
                     />
                 )}
 
-                {/* Auto-Update Banner */}
-                {updateState.status !== 'idle' && (
-                    <div className="update-banner">
-                        {updateState.status === 'available' && (
-                            <>
-                                <span>Update v{updateState.version} available</span>
-                                <button
-                                    className="update-btn"
-                                    onClick={() => {
-                                        setUpdateState(prev => ({ ...prev, status: 'downloading', progress: 0 }))
-                                        ;(window.electronAPI as any).downloadUpdate()
-                                    }}
-                                >
-                                    Download
-                                </button>
-                                <button className="update-dismiss" onClick={() => setUpdateState({ status: 'idle' })}>
-                                    Dismiss
-                                </button>
-                            </>
-                        )}
-                        {updateState.status === 'downloading' && (
-                            <>
-                                <span>Downloading update... {updateState.progress ? `${Math.round(updateState.progress)}%` : ''}</span>
-                                <div className="update-progress-bar">
-                                    <div className="update-progress-fill" style={{ width: `${updateState.progress || 0}%` }} />
-                                </div>
-                            </>
-                        )}
-                        {updateState.status === 'downloaded' && (
-                            <>
-                                <span>Update ready!</span>
-                                <button
-                                    className="update-btn"
-                                    onClick={() => (window.electronAPI as any).installUpdate()}
-                                >
-                                    Restart & Install
-                                </button>
-                            </>
-                        )}
-                        {updateState.status === 'error' && (
-                            <>
-                                <span>Update failed</span>
-                                <button className="update-dismiss" onClick={() => setUpdateState({ status: 'idle' })}>
-                                    Dismiss
-                                </button>
-                            </>
-                        )}
-                    </div>
-                )}
+
 
                 {/* Playlist Choice Modal */}
                 {playlistChoice && (

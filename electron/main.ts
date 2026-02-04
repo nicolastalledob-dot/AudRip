@@ -2263,7 +2263,8 @@ ipcMain.handle('check-for-updates', async () => {
             currentVersion: currentVersion,
             releaseNotes: Array.isArray(result.updateInfo.releaseNotes)
                 ? result.updateInfo.releaseNotes.map(n => typeof n === 'string' ? n : n.note).join('\n')
-                : (result.updateInfo.releaseNotes || '')
+                : (result.updateInfo.releaseNotes || ''),
+            downloadUrl: `https://github.com/nicolastalledob-dot/AudRip/releases/tag/v${result.updateInfo.version}`
         }
     } catch (error) {
         console.error('[AutoUpdater] Check failed:', error)
@@ -2275,6 +2276,11 @@ ipcMain.handle('check-for-updates', async () => {
         }
         return { updateAvailable: false, error: errStr, currentVersion }
     }
+})
+
+// Open external URL
+ipcMain.handle('open-external', async (_event, url) => {
+    await shell.openExternal(url)
 })
 
 ipcMain.handle('download-update', async () => {

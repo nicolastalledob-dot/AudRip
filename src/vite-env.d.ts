@@ -133,9 +133,10 @@ interface Window {
             coverArt?: string
         }) => Promise<{ success: boolean }>
         // Auto-updater
-        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, currentVersion?: string, releaseNotes?: string | null, error?: string }>
+        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, currentVersion?: string, releaseNotes?: string | null, downloadUrl?: string, error?: string }>
         downloadUpdate: () => Promise<{ success: boolean, error?: string }>
         installUpdate: () => Promise<void>
+        openExternal: (url: string) => Promise<void>
         onUpdateAvailable: (callback: (info: any) => void) => () => void
         onUpdateNotAvailable: (callback: () => void) => () => void
         onUpdateError: (callback: (error: string) => void) => () => void

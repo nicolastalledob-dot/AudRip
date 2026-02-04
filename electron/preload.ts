@@ -278,7 +278,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
         ipcRenderer.on('update-downloaded', handler)
         return () => ipcRenderer.removeListener('update-downloaded', handler)
-    }
+    },
+
+    openExternal: (url: string): Promise<void> =>
+        ipcRenderer.invoke('open-external', url)
 })
 
 // Type declaration for window.electronAPI

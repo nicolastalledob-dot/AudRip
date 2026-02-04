@@ -1,6 +1,6 @@
 {
   "name": "audrip",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "Download audio from YouTube and SoundCloud with metadata editing",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -63,13 +63,10 @@
       "icon": "build/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "target": {
-        "target": "default",
-        "arch": [
-          "x64",
-          "arm64"
-        ]
-      },
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "extraResources": [
         {
           "from": "bin/mac",

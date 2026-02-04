@@ -174,22 +174,31 @@ export interface Settings {
 
 function UpdateChecker() {
     const [status, setStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'uptodate'>('idle')
-    const [updateInfo, setUpdateInfo] = useState<{ version?: string, releaseNotes?: string } | null>(null)
+    const [updateInfo, setUpdateInfo] = useState<{ version?: string, releaseNotes?: string, downloadUrl?: string } | null>(null)
     const [progress, setProgress] = useState<number>(0)
     const [error, setError] = useState<string>('')
+    const [manualDownload, setManualDownload] = useState(false)
 
     useEffect(() => {
         // Set up listeners
         const cleanups = [
             window.electronAPI.onUpdateAvailable((info) => {
                 setStatus('available')
-                setUpdateInfo({ version: info.version, releaseNotes: info.releaseNotes })
+                setUpdateInfo({
+                    version: info.version,
+                    releaseNotes: info.releaseNotes,
+                    downloadUrl: info.downloadUrl
+                })
             }),
             window.electronAPI.onUpdateNotAvailable(() => {
                 setStatus('uptodate')
                 setTimeout(() => setStatus('idle'), 3000)
             }),
             window.electronAPI.onUpdateError((err) => {
+                // If checking fails, show error. 
+                // BUT if we were downloading and it failed, we handle that in downloadUpdate catch or here.
+                // We'll let the specific catch block in downloadUpdate handle the flow if possible, 
+                // but this listener catches global autoUpdater errors too.
                 setStatus('error')
                 setError(err)
             }),
@@ -209,6 +218,7 @@ function UpdateChecker() {
     const checkForUpdates = async () => {
         setStatus('checking')
         setError('')
+        setManualDownload(false)
         try {
             const result = await window.electronAPI.checkForUpdates()
             if (result.error) {
@@ -225,6 +235,14 @@ function UpdateChecker() {
                 setStatus('uptodate')
                 if (result.currentVersion) setUpdateInfo({ version: result.currentVersion })
                 setTimeout(() => setStatus('idle'), 3000)
+            } else {
+                // Explicitly set update info from result
+                setUpdateInfo({
+                    version: result.version,
+                    releaseNotes: result.releaseNotes || undefined,
+                    downloadUrl: (result as any).downloadUrl
+                })
+                setStatus('available')
             }
         } catch (e) {
             const errStr = String(e)
@@ -240,7 +258,27 @@ function UpdateChecker() {
 
     const downloadUpdate = async () => {
         setStatus('downloading')
-        await window.electronAPI.downloadUpdate()
+        const result = await window.electronAPI.downloadUpdate()
+        if (!result.success && result.error) {
+            // Check for signature error or general Mac update error
+            if (result.error.includes('Code signature') || result.error.includes('validation')) {
+                setStatus('error')
+                setError('Automatic update failed (Signature mismatch). Please download manually.')
+                setManualDownload(true)
+            } else {
+                setStatus('error')
+                setError(result.error)
+            }
+        }
+    }
+
+    const handleManualDownload = () => {
+        if (updateInfo?.downloadUrl) {
+            window.electronAPI.openExternal(updateInfo.downloadUrl)
+        } else {
+            // Fallback if URL missing
+            window.electronAPI.openExternal('https://github.com/nicolastalledob-dot/AudRip/releases/latest')
+        }
     }
 
     const installUpdate = async () => {
@@ -314,7 +352,13 @@ function UpdateChecker() {
                     <div className="update-error">
                         <AlertCircle size={14} />
                         <span>{error || 'Failed to check for updates'}</span>
-                        <button className="retry-btn" onClick={checkForUpdates}>Retry</button>
+                        {manualDownload ? (
+                            <button className="retry-btn" onClick={handleManualDownload}>
+                                <Download size={14} /> Download Manually
+                            </button>
+                        ) : (
+                            <button className="retry-btn" onClick={checkForUpdates}>Retry</button>
+                        )}
                     </div>
                 )}
             </div>
