@@ -1,5 +1,5 @@
-import { FolderOpen, RotateCcw, X, Check } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { FolderOpen, RotateCcw, X } from 'lucide-react'
+
 import '../styles/index.css'
 
 export const DEFAULT_ACCENT_COLOR = '#00ff88'
