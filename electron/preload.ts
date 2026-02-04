@@ -206,7 +206,79 @@ contextBridge.exposeInMainWorld('electronAPI', {
         outputFolder?: string
         metadata: { title: string; artist: string; album: string }
     }): Promise<{ success: boolean; outputPath: string }> =>
-        ipcRenderer.invoke('convert-m4a-to-mp3', options)
+        ipcRenderer.invoke('convert-m4a-to-mp3', options),
+
+    // Mini Player
+    openMiniPlayer: (screenPos?: { x: number; y: number }): Promise<void> =>
+        ipcRenderer.invoke('open-mini-player', screenPos),
+
+    closeMiniPlayer: (): Promise<void> =>
+        ipcRenderer.invoke('close-mini-player'),
+
+    syncPlaybackState: (state: any): Promise<void> =>
+        ipcRenderer.invoke('sync-playback-state', state),
+
+    miniPlayerCommand: (command: string): Promise<void> =>
+        ipcRenderer.invoke('mini-player-command', command),
+
+    onPlaybackStateSync: (callback: (state: any) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, state: any) => callback(state)
+        ipcRenderer.on('playback-state-sync', handler)
+        return () => ipcRenderer.removeListener('playback-state-sync', handler)
+    },
+
+    onMiniPlayerCommand: (callback: (command: string) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, command: string) => callback(command)
+        ipcRenderer.on('mini-player-command', handler)
+        return () => ipcRenderer.removeListener('mini-player-command', handler)
+    },
+
+    // Metadata Editing
+    editTrackMetadata: (options: {
+        filePath: string
+        metadata: { title: string; artist: string; album: string }
+        coverArt?: string
+    }): Promise<{ success: boolean }> =>
+        ipcRenderer.invoke('edit-track-metadata', options),
+
+    // Native Notifications
+    showNotification: (options: { title: string, body: string }): Promise<void> =>
+        ipcRenderer.invoke('show-notification', options),
+
+    // Auto Updater API
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    downloadUpdate: () => ipcRenderer.invoke('download-update'),
+    installUpdate: () => ipcRenderer.invoke('install-update'),
+
+    onUpdateAvailable: (callback: (info: any) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
+        ipcRenderer.on('update-available', handler)
+        return () => ipcRenderer.removeListener('update-available', handler)
+    },
+
+    onUpdateNotAvailable: (callback: () => void) => {
+        const handler = () => callback()
+        ipcRenderer.on('update-not-available', handler)
+        return () => ipcRenderer.removeListener('update-not-available', handler)
+    },
+
+    onUpdateError: (callback: (error: string) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, error: string) => callback(error)
+        ipcRenderer.on('update-error', handler)
+        return () => ipcRenderer.removeListener('update-error', handler)
+    },
+
+    onUpdateProgress: (callback: (progress: any) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, progress: any) => callback(progress)
+        ipcRenderer.on('auto-updater-progress', handler)
+        return () => ipcRenderer.removeListener('auto-updater-progress', handler)
+    },
+
+    onUpdateDownloaded: (callback: (info: any) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
+        ipcRenderer.on('update-downloaded', handler)
+        return () => ipcRenderer.removeListener('update-downloaded', handler)
+    }
 })
 
 // Type declaration for window.electronAPI
@@ -259,6 +331,34 @@ declare global {
                 outputFolder?: string
                 metadata: { title: string; artist: string; album: string }
             }) => Promise<{ success: boolean; outputPath: string }>
+            // Mini Player
+            openMiniPlayer: () => Promise<void>
+            closeMiniPlayer: () => Promise<void>
+            syncPlaybackState: (state: any) => Promise<void>
+            miniPlayerCommand: (command: string) => Promise<void>
+            onPlaybackStateSync: (callback: (state: any) => void) => () => void
+            onMiniPlayerCommand: (callback: (command: string) => void) => () => void
+            // Notifications
+            showNotification: (options: { title: string, body: string }) => Promise<void>
+            // Metadata editing
+            editTrackMetadata: (options: {
+                filePath: string
+                metadata: { title: string; artist: string; album: string }
+                coverArt?: string
+            }) => Promise<{ success: boolean }>
+            // Auto-updater
+            checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, releaseNotes?: string | null, error?: string }>
+            downloadUpdate: () => Promise<{ success: boolean, error?: string }>
+            installUpdate: () => Promise<void>
+            onUpdateAvailable: (callback: (info: any) => void) => () => void
+            onUpdateNotAvailable: (callback: () => void) => () => void
+            onUpdateError: (callback: (error: string) => void) => () => void
+            onUpdateProgress: (callback: (progress: any) => void) => () => void
+            onUpdateDownloaded: (callback: (info: any) => void) => () => void
+            // FX Presets
+            getFxPresets: () => Promise<any[]>
+            saveFxPreset: (preset: any) => Promise<{ success: boolean, presets: any[] }>
+            deleteFxPreset: (presetId: string) => Promise<{ success: boolean, presets: any[] }>
         }
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "audrip",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "Download audio from YouTube and SoundCloud with metadata editing",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -11,15 +11,19 @@
     "electron:build": "vite build && electron-builder"
   },
   "dependencies": {
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.7.3",
     "lucide-react": "^0.562.0",
     "music-metadata-browser": "^2.5.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "three": "^0.182.0",
     "wavesurfer.js": "^7.8.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.182.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.0",
@@ -32,14 +36,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nmtb97/AudRip.git"
+    "url": "git+https://github.com/nicolastalledob-dot/AudRip.git"
   },
   "build": {
     "appId": "com.audrip.app",
     "productName": "AudRip",
     "publish": {
       "provider": "github",
-      "owner": "nmtb97",
+      "owner": "nicolastalledob-dot",
       "repo": "AudRip"
     },
     "directories": {
@@ -59,10 +63,13 @@
       "icon": "build/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "target": [
-        "dmg",
-        "zip"
-      ],
+      "target": {
+        "target": "default",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
       "extraResources": [
         {
           "from": "bin/mac",

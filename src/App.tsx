@@ -4,8 +4,9 @@ import UrlInput from './components/UrlInput'
 import DownloadHistory from './components/DownloadHistory'
 import PlaylistEditor from './components/PlaylistEditor'
 import MusicPlayer from './components/MusicPlayer'
-import SettingsModal, { Settings, DEFAULT_ACCENT_COLOR } from './components/SettingsModal'
+import SettingsModal, { Settings, DEFAULT_ACCENT_COLOR, THEME_PRESETS, ThemeKey } from './components/SettingsModal'
 import M4AConverter from './components/M4AConverter'
+import MiniPlayer from './components/MiniPlayer'
 import { PlaylistItem, Track } from './types'
 
 type ViewType = 'home' | 'history' | 'player' | 'converter'
@@ -33,6 +34,11 @@ interface DownloadState {
 }
 
 function App() {
+    // Mini player mode: render only MiniPlayer component
+    if (window.location.hash === '#/mini-player') {
+        return <MiniPlayer />
+    }
+
     const [playlistItems, setPlaylistItems] = useState<PlaylistItem[]>([])
     const [isLoading, setIsLoading] = useState(false)
 
@@ -45,7 +51,13 @@ function App() {
         musicPlayerFolder: '',
         mp3OutputFolder: '',
         accentColor: DEFAULT_ACCENT_COLOR,
-        theme: 'dark'
+        theme: 'dark',
+        concurrentDownloads: 2,
+        notifications: true,
+        crossfadeDuration: 0,
+        audioNormalization: false,
+        surpriseMode: false,
+        adaptiveColors: false
     })
 
     const [downloadState, setDownloadState] = useState<DownloadState>({ stage: 'idle', percent: 0 })
@@ -57,13 +69,30 @@ function App() {
     const [isLibraryLoaded, setIsLibraryLoaded] = useState(false)
     const [showSplash, setShowSplash] = useState(true)
 
+    // Auto-update state
+    const [updateState, setUpdateState] = useState<{
+        status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error'
+        version?: string
+        progress?: number
+        error?: string
+    }>({ status: 'idle' })
+
     const isAppReady = isSettingsLoaded && isLibraryLoaded
 
     // Load settings
     useEffect(() => {
         if (window.electronAPI?.getSettings) {
             window.electronAPI.getSettings().then(saved => {
-                if (saved) setSettings(prev => ({ ...prev, ...saved }))
+                if (saved) {
+                    const merged = { ...settings, ...saved }
+                    if (merged.surpriseMode) {
+                        const themeKeys = Object.keys(THEME_PRESETS) as ThemeKey[]
+                        merged.theme = themeKeys[Math.floor(Math.random() * themeKeys.length)]
+                        const randomColor = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')
+                        merged.accentColor = randomColor
+                    }
+                    setSettings(merged)
+                }
                 setIsSettingsLoaded(true)
             })
         } else {
@@ -95,6 +124,48 @@ function App() {
             return () => clearTimeout(timeout)
         }
     }, [isAppReady])
+
+    // Auto-update: check on startup and listen for events
+    useEffect(() => {
+        const api = window.electronAPI as any
+        if (!api?.checkForUpdates) return
+
+        const timer = setTimeout(() => {
+            api.checkForUpdates().then((result: any) => {
+                if (result?.updateAvailable) {
+                    setUpdateState({ status: 'available', version: result.version })
+                }
+            }).catch(() => {})
+        }, 5000)
+
+        const cleanups: (() => void)[] = []
+
+        if (api.onUpdateAvailable) {
+            cleanups.push(api.onUpdateAvailable((info: any) => {
+                setUpdateState({ status: 'available', version: info?.version })
+            }))
+        }
+        if (api.onUpdateProgress) {
+            cleanups.push(api.onUpdateProgress((progress: any) => {
+                setUpdateState(prev => ({ ...prev, status: 'downloading', progress: progress?.percent }))
+            }))
+        }
+        if (api.onUpdateDownloaded) {
+            cleanups.push(api.onUpdateDownloaded(() => {
+                setUpdateState(prev => ({ ...prev, status: 'downloaded' }))
+            }))
+        }
+        if (api.onUpdateError) {
+            cleanups.push(api.onUpdateError((error: string) => {
+                setUpdateState(prev => ({ ...prev, status: 'error', error }))
+            }))
+        }
+
+        return () => {
+            clearTimeout(timer)
+            cleanups.forEach(fn => fn())
+        }
+    }, [])
 
     // Refresh music library (called by MusicPlayer or after download)
     const refreshMusicLibrary = useCallback(async () => {
@@ -135,6 +206,9 @@ function App() {
 
         const root = document.documentElement.style
 
+        // Skip if adaptive mode is on — MusicPlayer handles both accent + theme
+        if (settings.adaptiveColors) return
+
         // Accent color
         const accentHex = settings.accentColor || DEFAULT_ACCENT_COLOR
         const accent = hexToRgb(accentHex)
@@ -148,42 +222,26 @@ function App() {
         root.setProperty('--accent-success', accentHex)
         root.setProperty('--shadow-glow', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.3)`)
 
-        // Theme
-        const isLight = settings.theme === 'light'
-        if (isLight) {
-            root.setProperty('--bg-primary', '#f0f0f0')
-            root.setProperty('--bg-secondary', '#e4e4e4')
-            root.setProperty('--bg-tertiary', '#d8d8d8')
-            root.setProperty('--bg-glass', 'rgba(240, 240, 240, 0.85)')
-            root.setProperty('--bg-glass-hover', 'rgba(228, 228, 228, 0.9)')
-            root.setProperty('--bg-frosted', 'rgba(235, 235, 238, 0.95)')
-            root.setProperty('--text-primary', '#111111')
-            root.setProperty('--text-secondary', '#555555')
-            root.setProperty('--text-muted', '#888888')
-            root.setProperty('--overlay-rgb', '0, 0, 0')
-            root.setProperty('--shadow-sm', '0 2px 8px rgba(0, 0, 0, 0.1)')
-            root.setProperty('--shadow-md', '0 4px 16px rgba(0, 0, 0, 0.12)')
-            root.setProperty('--border-glass', '1px solid rgba(0, 0, 0, 0.08)')
-            root.setProperty('--player-bg-brightness', '1.3')
-            root.setProperty('--player-bg-opacity', '0.15')
-        } else {
-            root.setProperty('--bg-primary', '#000000')
-            root.setProperty('--bg-secondary', '#0a0a0a')
-            root.setProperty('--bg-tertiary', '#141414')
-            root.setProperty('--bg-glass', 'rgba(20, 20, 20, 0.8)')
-            root.setProperty('--bg-glass-hover', 'rgba(30, 30, 30, 0.9)')
-            root.setProperty('--bg-frosted', 'rgba(10, 10, 12, 0.95)')
-            root.setProperty('--text-primary', '#ffffff')
-            root.setProperty('--text-secondary', '#888888')
-            root.setProperty('--text-muted', '#555555')
-            root.setProperty('--overlay-rgb', '255, 255, 255')
-            root.setProperty('--shadow-sm', '0 2px 8px rgba(0, 0, 0, 0.5)')
-            root.setProperty('--shadow-md', '0 4px 16px rgba(0, 0, 0, 0.6)')
-            root.setProperty('--border-glass', '1px solid rgba(255, 255, 255, 0.08)')
-            root.setProperty('--player-bg-brightness', '0.4')
-            root.setProperty('--player-bg-opacity', '0.6')
-        }
-    }, [settings.accentColor, settings.theme])
+        // Theme - apply from preset
+        const preset = THEME_PRESETS[settings.theme as ThemeKey] || THEME_PRESETS.dark
+        const c = preset.colors
+        root.setProperty('--bg-primary', c.bgPrimary)
+        root.setProperty('--bg-secondary', c.bgSecondary)
+        root.setProperty('--bg-tertiary', c.bgTertiary)
+        root.setProperty('--bg-glass', c.bgGlass)
+        root.setProperty('--bg-glass-hover', c.bgGlassHover)
+        root.setProperty('--bg-frosted', c.bgFrosted)
+        root.setProperty('--text-primary', c.textPrimary)
+        root.setProperty('--text-secondary', c.textSecondary)
+        root.setProperty('--text-muted', c.textMuted)
+        root.setProperty('--overlay-rgb', c.overlayRgb)
+        root.setProperty('--fx-overlay-bg', c.fxOverlayBg)
+        root.setProperty('--shadow-sm', c.shadowSm)
+        root.setProperty('--shadow-md', c.shadowMd)
+        root.setProperty('--border-glass', c.borderGlass)
+        root.setProperty('--player-bg-brightness', c.playerBgBrightness)
+        root.setProperty('--player-bg-opacity', c.playerBgOpacity)
+    }, [settings.accentColor, settings.theme, settings.adaptiveColors])
 
     const abortDownloadRef = useRef(false)
     const currentDownloadIdRef = useRef<string | null>(null)
@@ -229,31 +287,32 @@ function App() {
     }, [])
 
     const handleCancel = useCallback(async () => {
-        console.log('Cancel requested. Current ID:', currentDownloadIdRef.current)
         abortDownloadRef.current = true
 
-        // Immediate feedback
         setDownloadState(prev => ({
             ...prev,
             stage: 'error',
             error: 'Cancelling...'
         }))
 
+        // Cancel all active downloads
+        const cancelPromises = Array.from(activeDownloadIdsRef.current.keys()).map(id =>
+            window.electronAPI.cancelDownload(id).catch(() => {})
+        )
         if (currentDownloadIdRef.current) {
-            await window.electronAPI.cancelDownload(currentDownloadIdRef.current)
-
-            // Validate cancellation confirmed
-            setDownloadState(prev => ({
-                ...prev,
-                stage: 'error',
-                error: 'Cancelled'
-            }))
-
-            // Reset after 3 seconds
-            setTimeout(() => {
-                setDownloadState({ stage: 'idle', percent: 0, error: undefined })
-            }, 3000)
+            cancelPromises.push(window.electronAPI.cancelDownload(currentDownloadIdRef.current).catch(() => {}))
         }
+        await Promise.all(cancelPromises)
+
+        setDownloadState(prev => ({
+            ...prev,
+            stage: 'error',
+            error: 'Cancelled'
+        }))
+
+        setTimeout(() => {
+            setDownloadState({ stage: 'idle', percent: 0, error: undefined })
+        }, 3000)
     }, [])
 
     // Playlist choice state
@@ -266,6 +325,14 @@ function App() {
         setDownloadState(prev => ({ ...prev, stage: 'idle', percent: 0, error: undefined }))
 
         try {
+            // For non-YouTube/SC URLs, skip playlist detection entirely
+            const isYouTube = url.includes('youtube.com') || url.includes('youtu.be')
+            const isSoundCloud = url.includes('soundcloud.com')
+            if (!isYouTube && !isSoundCloud) {
+                await processUrl(url, false)
+                return
+            }
+
             let isPlaylistUrl = false
             let hasPlaylistParam = false
             let listId = ''
@@ -304,17 +371,6 @@ function App() {
             if (hasPlaylistParam && !isPlaylistUrl) {
                 setIsLoading(false)
                 setPlaylistChoice({ url, listId })
-                return
-            }
-
-            // Block SC playlists for now
-            if (isPlaylistUrl && url.includes('soundcloud.com')) {
-                setIsLoading(false)
-                setDownloadState({
-                    stage: 'error',
-                    percent: 0,
-                    error: 'SoundCloud playlist downloads are not yet supported. Please paste individual song links for now.'
-                })
                 return
             }
 
@@ -412,12 +468,14 @@ function App() {
 
         if (choice === 'playlist') {
             if (url.includes('soundcloud.com')) {
-                setDownloadState({
-                    stage: 'error',
-                    percent: 0,
-                    error: 'SoundCloud playlist downloads are not yet supported. Please use "Just This Song" or paste individual song links.'
-                })
-                return
+                // For SC, reconstruct the set URL from the 'in' param
+                try {
+                    const inParam = new URL(url).searchParams.get('in')
+                    const setUrl = inParam ? `https://soundcloud.com/${inParam}` : url
+                    await processUrl(setUrl, true)
+                } catch {
+                    await processUrl(url, true)
+                }
             } else {
                 const playlistUrl = `https://www.youtube.com/playlist?list=${listId}`
                 await processUrl(playlistUrl, true)
@@ -427,12 +485,15 @@ function App() {
         }
     }, [playlistChoice, processUrl])
 
-    // Batch download (the only download handler now)
+    const activeDownloadIdsRef = useRef<Map<string, string>>(new Map()) // downloadUUID -> itemId
+
+    // Batch download with parallel support
     const handleDownload = useCallback(async () => {
         const selectedItems = playlistItems.filter(item => item.selected)
         if (selectedItems.length === 0) return
 
         abortDownloadRef.current = false
+        activeDownloadIdsRef.current.clear()
 
         setDownloadState({
             stage: 'downloading',
@@ -441,29 +502,21 @@ function App() {
             totalCount: selectedItems.length
         })
 
-        for (let i = 0; i < selectedItems.length; i++) {
-            if (abortDownloadRef.current) break
+        const concurrency = settings.concurrentDownloads || 2
+        let completedSoFar = 0
 
-            const item = selectedItems[i]
+        const downloadItem = async (item: PlaylistItem) => {
+            if (abortDownloadRef.current) return
 
-            // Track which item is currently downloading
+            const id = crypto.randomUUID()
+            activeDownloadIdsRef.current.set(id, item.id)
             currentDownloadingItemIdRef.current = item.id
 
-            // Set initial downloading state for this item
             setPlaylistItems(items => items.map(it =>
                 it.id === item.id
                     ? { ...it, downloadProgress: { stage: 'downloading', percent: 0 } }
                     : it
             ))
-
-            setDownloadState(prev => ({
-                ...prev,
-                currentIndex: i + 1,
-                percent: 0
-            }))
-
-            const id = crypto.randomUUID()
-            currentDownloadIdRef.current = id
 
             try {
                 const result = await window.electronAPI.downloadAudio({
@@ -477,12 +530,17 @@ function App() {
                     id
                 })
 
-                // Mark item as complete
                 setPlaylistItems(items => items.map(it =>
                     it.id === item.id
                         ? { ...it, downloadProgress: { stage: 'complete', percent: 100 } }
                         : it
                 ))
+
+                completedSoFar++
+                setDownloadState(prev => ({
+                    ...prev,
+                    currentIndex: completedSoFar
+                }))
 
                 await window.electronAPI.saveToHistory({
                     title: item.metadata.title,
@@ -492,19 +550,42 @@ function App() {
                     thumbnail: item.thumbnail
                 })
             } catch (error) {
-                // Mark item as error
+                const errMsg = error instanceof Error ? error.message : String(error)
                 setPlaylistItems(items => items.map(it =>
                     it.id === item.id
                         ? { ...it, downloadProgress: { stage: 'error', percent: 0 } }
                         : it
                 ))
-
-                if (abortDownloadRef.current) break
-                console.error(`Failed to download ${item.title}:`, error)
+                completedSoFar++
+                if (!abortDownloadRef.current) {
+                    console.error(`Failed to download ${item.title}:`, error)
+                    // Show error in UI for single-item downloads
+                    if (selectedItems.length === 1) {
+                        setDownloadState({
+                            stage: 'error',
+                            percent: 0,
+                            error: errMsg
+                        })
+                    }
+                }
+            } finally {
+                activeDownloadIdsRef.current.delete(id)
             }
         }
 
+        // Worker pool pattern
+        const queue = [...selectedItems]
+        const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+            while (queue.length > 0 && !abortDownloadRef.current) {
+                const item = queue.shift()!
+                await downloadItem(item)
+            }
+        })
+
+        await Promise.all(workers)
+
         currentDownloadIdRef.current = null
+        activeDownloadIdsRef.current.clear()
 
         if (abortDownloadRef.current) {
             setDownloadState(prev => ({
@@ -518,10 +599,17 @@ function App() {
                 percent: 100,
                 totalCount: selectedItems.length
             })
-            // Refresh music library so new downloads appear in the player
             refreshMusicLibrary()
+
+            // Native notification
+            if (settings.notifications !== false && (window.electronAPI as any).showNotification) {
+                (window.electronAPI as any).showNotification({
+                    title: 'Downloads Complete',
+                    body: `${selectedItems.length} track${selectedItems.length > 1 ? 's' : ''} downloaded successfully.`
+                })
+            }
         }
-    }, [playlistItems, settings.format, settings.coverArtRatio, refreshMusicLibrary])
+    }, [playlistItems, settings.format, settings.coverArtRatio, settings.concurrentDownloads, settings.notifications, refreshMusicLibrary])
 
     const handleUpdatePlaylistItem = useCallback((index: number, updates: Partial<PlaylistItem>) => {
         setPlaylistItems(items => items.map((item, i) =>
@@ -668,6 +756,11 @@ function App() {
                                 isActive={activeView === 'player'}
                                 initialTracks={musicLibrary}
                                 onRefreshTracks={refreshMusicLibrary}
+                                crossfadeDuration={settings.crossfadeDuration || 0}
+                                audioNormalization={settings.audioNormalization || false}
+                                theme={settings.theme || 'dark'}
+                                accentColor={settings.accentColor || DEFAULT_ACCENT_COLOR}
+                                adaptiveColors={settings.adaptiveColors || false}
                             />
                         </div>
 
@@ -710,8 +803,8 @@ function App() {
                                             fontWeight: 500
                                         }}>
                                             Downloaded {completedCount} / {selectedCount}
-                                            {downloadState.speed && ` • ${downloadState.speed}`}
-                                            {downloadState.eta && ` • ETA ${downloadState.eta}`}
+                                            {(settings.concurrentDownloads || 2) <= 1 && downloadState.speed && ` • ${downloadState.speed}`}
+                                            {(settings.concurrentDownloads || 2) <= 1 && downloadState.eta && ` • ETA ${downloadState.eta}`}
                                         </div>
                                         <button
                                             className="cancel-button"
@@ -753,6 +846,56 @@ function App() {
                     />
                 )}
 
+                {/* Auto-Update Banner */}
+                {updateState.status !== 'idle' && (
+                    <div className="update-banner">
+                        {updateState.status === 'available' && (
+                            <>
+                                <span>Update v{updateState.version} available</span>
+                                <button
+                                    className="update-btn"
+                                    onClick={() => {
+                                        setUpdateState(prev => ({ ...prev, status: 'downloading', progress: 0 }))
+                                        ;(window.electronAPI as any).downloadUpdate()
+                                    }}
+                                >
+                                    Download
+                                </button>
+                                <button className="update-dismiss" onClick={() => setUpdateState({ status: 'idle' })}>
+                                    Dismiss
+                                </button>
+                            </>
+                        )}
+                        {updateState.status === 'downloading' && (
+                            <>
+                                <span>Downloading update... {updateState.progress ? `${Math.round(updateState.progress)}%` : ''}</span>
+                                <div className="update-progress-bar">
+                                    <div className="update-progress-fill" style={{ width: `${updateState.progress || 0}%` }} />
+                                </div>
+                            </>
+                        )}
+                        {updateState.status === 'downloaded' && (
+                            <>
+                                <span>Update ready!</span>
+                                <button
+                                    className="update-btn"
+                                    onClick={() => (window.electronAPI as any).installUpdate()}
+                                >
+                                    Restart & Install
+                                </button>
+                            </>
+                        )}
+                        {updateState.status === 'error' && (
+                            <>
+                                <span>Update failed</span>
+                                <button className="update-dismiss" onClick={() => setUpdateState({ status: 'idle' })}>
+                                    Dismiss
+                                </button>
+                            </>
+                        )}
+                    </div>
+                )}
+
                 {/* Playlist Choice Modal */}
                 {playlistChoice && (
                     <div className="modal-overlay" onClick={() => setPlaylistChoice(null)}>
@@ -767,12 +910,10 @@ function App() {
                                     <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Just This Song' : 'Just This Video'}</span>
                                 </button>
                                 <button
-                                    className={`playlist-action-btn-modal primary ${playlistChoice.url.includes('soundcloud.com') ? 'disabled' : ''}`}
+                                    className="playlist-action-btn-modal primary"
                                     onClick={() => handlePlaylistChoice('playlist')}
-                                    disabled={playlistChoice.url.includes('soundcloud.com')}
-                                    title={playlistChoice.url.includes('soundcloud.com') ? 'SoundCloud playlists not yet supported' : ''}
                                 >
-                                    <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Not Available' : 'Full Playlist'}</span>
+                                    <span className="btn-text">{playlistChoice.url.includes('soundcloud.com') ? 'Full Set' : 'Full Playlist'}</span>
                                 </button>
                             </div>
                         </div>

@@ -22,8 +22,7 @@ function UrlInput({ onSubmit, isLoading, disabled }: UrlInputProps) {
         }
     }, [handleSubmit])
 
-    const isValidUrl = url.trim().length > 0 &&
-        (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('soundcloud.com'))
+    const isValidUrl = url.trim().length > 0 && url.includes('://')
 
     return (
         <div className="panel">
@@ -31,7 +30,7 @@ function UrlInput({ onSubmit, isLoading, disabled }: UrlInputProps) {
                 <input
                     type="text"
                     className="url-input"
-                    placeholder="Paste YouTube or SoundCloud URL..."
+                    placeholder="Paste any audio URL..."
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
                     onKeyDown={handleKeyDown}

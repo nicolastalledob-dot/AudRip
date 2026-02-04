@@ -54,6 +54,16 @@ interface MetadataHistory {
     id?: string
 }
 
+interface Playlist {
+    id: string
+    name: string
+    description: string
+    coverArt: string | null
+    trackPaths: string[]
+    createdAt: number
+    updatedAt: number
+}
+
 interface Window {
     electronAPI: {
         getVideoInfo: (url: string) => Promise<VideoInfo>
@@ -68,8 +78,68 @@ interface Window {
         selectImage: () => Promise<string | null>
         processAlbumArt: (options: { imageData: string, aspectRatio: '1:1' | '16:9' }) => Promise<string>
         cancelDownload: (id: string) => Promise<void>
-        getSettings: () => Promise<{ format: 'mp3' | 'm4a', coverArtRatio: '1:1' | '16:9' } | null>
-        saveSettings: (settings: { format: 'mp3' | 'm4a', coverArtRatio: '1:1' | '16:9' }) => Promise<boolean>
+        getSettings: () => Promise<any>
+        saveSettings: (settings: any) => Promise<void>
         clearHistory: () => Promise<void>
+        getMusicLibrary: () => Promise<{
+            path: string
+            title: string
+            artist: string
+            album: string
+            duration: number
+            coverArt: string | null
+        }[]>
+        getTrackCoverArt: (filePath: string) => Promise<string | null>
+        extractFrames: (url: string, count?: number) => Promise<string[]>
+        // Playlists
+        getPlaylists: () => Promise<Playlist[]>
+        savePlaylist: (playlist: Playlist) => Promise<{ success: boolean, playlists: Playlist[] }>
+        deletePlaylist: (playlistId: string) => Promise<{ success: boolean, playlists: Playlist[] }>
+        addTrackToPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
+        removeTrackFromPlaylist: (playlistId: string, trackPath: string) => Promise<{ success: boolean, playlist?: Playlist, error?: string }>
+        // FX Presets
+        getFxPresets: () => Promise<any[]>
+        saveFxPreset: (preset: any) => Promise<{ success: boolean, presets: any[] }>
+        deleteFxPreset: (presetId: string) => Promise<{ success: boolean, presets: any[] }>
+        // M4A Converter
+        scanForM4A: (paths: string[]) => Promise<Array<{
+            path: string
+            filename: string
+            title: string
+            artist: string
+            album: string
+            duration: number
+            coverArt: string | null
+        }>>
+        selectM4AFiles: () => Promise<string[]>
+        convertM4AToMP3: (options: {
+            inputPath: string
+            outputFolder?: string
+            metadata: { title: string; artist: string; album: string }
+        }) => Promise<{ success: boolean; outputPath: string }>
+        // Mini Player
+        openMiniPlayer: () => Promise<void>
+        closeMiniPlayer: () => Promise<void>
+        syncPlaybackState: (state: any) => Promise<void>
+        miniPlayerCommand: (command: string) => Promise<void>
+        onPlaybackStateSync: (callback: (state: any) => void) => () => void
+        onMiniPlayerCommand: (callback: (command: string) => void) => () => void
+        // Notifications
+        showNotification: (options: { title: string, body: string }) => Promise<void>
+        // Metadata editing
+        editTrackMetadata: (options: {
+            filePath: string
+            metadata: { title: string; artist: string; album: string }
+            coverArt?: string
+        }) => Promise<{ success: boolean }>
+        // Auto-updater
+        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, releaseNotes?: string | null, error?: string }>
+        downloadUpdate: () => Promise<{ success: boolean, error?: string }>
+        installUpdate: () => Promise<void>
+        onUpdateAvailable: (callback: (info: any) => void) => () => void
+        onUpdateNotAvailable: (callback: () => void) => () => void
+        onUpdateError: (callback: (error: string) => void) => () => void
+        onUpdateProgress: (callback: (progress: any) => void) => () => void
+        onUpdateDownloaded: (callback: (info: any) => void) => () => void
     }
 }

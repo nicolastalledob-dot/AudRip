@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 
 // ... existing imports ...
-import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon, MoreHorizontal as MoreIcon, ListMusic as PlaylistIcon, Plus as PlusIcon, X as CloseIcon, ArrowLeft as BackIcon, Trash2 as TrashIcon, Upload as UploadIcon, Edit2 as EditIcon, Shuffle as ShuffleIcon, Repeat as RepeatIcon, Repeat1 as Repeat1Icon, Minus as MinusIcon, ArrowUpDown as SortIcon, Save as SaveIcon } from 'lucide-react'
+import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Volume2 as VolumeIcon, VolumeX as MuteIcon, Music as MusicIcon, Search as SearchIcon, Sparkles as SparklesIcon, MoreHorizontal as MoreIcon, ListMusic as PlaylistIcon, Plus as PlusIcon, X as CloseIcon, ArrowLeft as BackIcon, Trash2 as TrashIcon, Upload as UploadIcon, Edit2 as EditIcon, Shuffle as ShuffleIcon, Repeat as RepeatIcon, Repeat1 as Repeat1Icon, Minus as MinusIcon, ArrowUpDown as SortIcon, Save as SaveIcon, Clock as ClockIcon, List as CompactIcon, ListOrdered as QueueIcon, Monitor as MiniPlayerIcon } from 'lucide-react'
 import { Track } from '../types'
+import { THEME_PRESETS, ThemeKey } from './SettingsModal'
+import CoverArtCube3D from './CoverArtCube3D'
 
 interface Playlist {
     id: string
@@ -19,7 +21,145 @@ interface MusicPlayerProps {
     isActive: boolean
     initialTracks?: Track[]
     onRefreshTracks?: () => Promise<Track[]>
+    crossfadeDuration?: number
+    audioNormalization?: boolean
+    theme?: string
+    accentColor?: string
+    adaptiveColors?: boolean
 }
+
+interface ArtAnalysis {
+    color: string
+    theme: ThemeKey
+}
+
+// Map dominant hue to the most fitting theme
+function hueToTheme(hue: number, avgLightness: number): ThemeKey {
+    // Very bright images → light theme
+    if (avgLightness > 0.65) return 'light'
+    // Very dark & desaturated → dark
+    if (avgLightness < 0.2) return 'dark'
+
+    // Map hue ranges to themed variants
+    if (hue < 30 || hue >= 330) return 'rose'       // red/pink
+    if (hue < 60) return 'sunset'                     // orange/warm
+    if (hue < 150) return 'forest'                    // yellow-green/green
+    if (hue < 210) return 'ocean'                     // cyan/teal
+    if (hue < 270) return 'nord'                      // blue
+    return 'synthwave'                                 // purple/magenta
+}
+
+function analyzeAlbumArt(imgSrc: string): Promise<ArtAnalysis | null> {
+    return new Promise((resolve) => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => {
+            try {
+                const canvas = document.createElement('canvas')
+                const size = 40
+                canvas.width = size
+                canvas.height = size
+                const ctx = canvas.getContext('2d')
+                if (!ctx) { resolve(null); return }
+
+                ctx.drawImage(img, 0, 0, size, size)
+                const { data } = ctx.getImageData(0, 0, size, size)
+
+                // Group pixels into 12 hue buckets (30 degrees each)
+                const buckets: Array<{ totalR: number; totalG: number; totalB: number; count: number; satSum: number }> = Array.from(
+                    { length: 12 }, () => ({ totalR: 0, totalG: 0, totalB: 0, count: 0, satSum: 0 })
+                )
+
+                // Track overall image brightness
+                let totalLightness = 0
+                const pixelCount = data.length / 4
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i], g = data[i + 1], b = data[i + 2]
+                    const max = Math.max(r, g, b), min = Math.min(r, g, b)
+                    const delta = max - min
+                    const l = (max + min) / 510
+                    const s = delta === 0 ? 0 : delta / (255 * (1 - Math.abs(2 * l - 1)))
+
+                    totalLightness += l
+
+                    // Skip desaturated, very dark, or very bright pixels for color extraction
+                    if (s < 0.2 || l < 0.1 || l > 0.85) continue
+
+                    let h = 0
+                    if (delta !== 0) {
+                        if (max === r) h = 60 * (((g - b) / delta) % 6)
+                        else if (max === g) h = 60 * ((b - r) / delta + 2)
+                        else h = 60 * ((r - g) / delta + 4)
+                        if (h < 0) h += 360
+                    }
+
+                    const bucket = Math.min(11, Math.floor(h / 30))
+                    buckets[bucket].totalR += r
+                    buckets[bucket].totalG += g
+                    buckets[bucket].totalB += b
+                    buckets[bucket].count++
+                    buckets[bucket].satSum += s
+                }
+
+                const avgLightness = totalLightness / pixelCount
+
+                // Pick the bucket with the best score (count * average saturation)
+                let bestBucket = -1
+                let bestScore = 0
+                for (let i = 0; i < 12; i++) {
+                    const b = buckets[i]
+                    if (b.count === 0) continue
+                    const score = b.count * (b.satSum / b.count)
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestBucket = i
+                    }
+                }
+
+                if (bestBucket === -1) {
+                    // No vibrant colors found — pick theme from brightness alone
+                    resolve({ color: '#888888', theme: avgLightness > 0.5 ? 'light' : 'dark' })
+                    return
+                }
+
+                const b = buckets[bestBucket]
+                const avgR = Math.round(b.totalR / b.count)
+                const avgG = Math.round(b.totalG / b.count)
+                const avgB = Math.round(b.totalB / b.count)
+
+                // Boost saturation slightly for a more vivid accent
+                const max = Math.max(avgR, avgG, avgB), min = Math.min(avgR, avgG, avgB)
+                const mid = (max + min) / 2
+                const boost = 1.3
+                const finalR = Math.min(255, Math.round(mid + (avgR - mid) * boost))
+                const finalG = Math.min(255, Math.round(mid + (avgG - mid) * boost))
+                const finalB = Math.min(255, Math.round(mid + (avgB - mid) * boost))
+
+                const color = '#' + [finalR, finalG, finalB].map(v => Math.max(0, v).toString(16).padStart(2, '0')).join('')
+                const dominantHue = bestBucket * 30 + 15
+                const theme = hueToTheme(dominantHue, avgLightness)
+
+                resolve({ color, theme })
+            } catch {
+                resolve(null)
+            }
+        }
+        img.onerror = () => resolve(null)
+        img.src = imgSrc
+    })
+}
+
+const EQ_BANDS = [
+    { freq: 60, label: '60', type: 'lowshelf' as const },
+    { freq: 170, label: '170', type: 'peaking' as const },
+    { freq: 310, label: '310', type: 'peaking' as const },
+    { freq: 600, label: '600', type: 'peaking' as const },
+    { freq: 1000, label: '1k', type: 'peaking' as const },
+    { freq: 3000, label: '3k', type: 'peaking' as const },
+    { freq: 6000, label: '6k', type: 'peaking' as const },
+    { freq: 12000, label: '12k', type: 'highshelf' as const },
+]
 
 const MarqueeText = ({ text }: { text: string }) => {
     const containerRef = useRef<HTMLDivElement>(null)
@@ -53,13 +193,21 @@ const MarqueeText = ({ text }: { text: string }) => {
     )
 }
 
-export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }: MusicPlayerProps) {
+export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, crossfadeDuration = 0, audioNormalization = false, theme = 'dark', accentColor = '#00ff88', adaptiveColors = false }: MusicPlayerProps) {
     const [tracks, setTracks] = useState<Track[]>(initialTracks || [])
     const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1)
     const [isPlaying, setIsPlaying] = useState(false)
     const [currentTime, setCurrentTime] = useState(0)
     const [duration, setDuration] = useState(0)
-    const [volume, setVolume] = useState(1)
+    const [volume, setVolume] = useState(() => {
+        const savedVol = localStorage.getItem('audrip-volume')
+        return savedVol ? parseFloat(savedVol) : 1
+    })
+
+    // Save volume to localStorage
+    useEffect(() => {
+        localStorage.setItem('audrip-volume', volume.toString())
+    }, [volume])
     const [isLoading, setIsLoading] = useState(!initialTracks || initialTracks.length === 0)
     const [searchTerm, setSearchTerm] = useState('')
 
@@ -83,6 +231,24 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const [repeatMode, setRepeatMode] = useState<'off' | 'all' | 'one'>('all')
     const shuffleHistoryRef = useRef<number[]>([])
     const [sortBy, setSortBy] = useState<'default' | 'title' | 'artist' | 'duration' | 'recent'>('default')
+
+    // --- COMPACT MODE ---
+    const [isCompact, setIsCompact] = useState(false)
+
+    // --- SLEEP TIMER ---
+    const [sleepTimerMode, setSleepTimerMode] = useState<'off' | 'time' | 'endOfTrack'>('off')
+    const [sleepTimerEnd, setSleepTimerEnd] = useState<number | null>(null)
+    const [sleepTimerRemaining, setSleepTimerRemaining] = useState('')
+    const [showSleepMenu, setShowSleepMenu] = useState(false)
+    const sleepTimerModeRef = useRef<'off' | 'time' | 'endOfTrack'>('off')
+
+    // --- PLAYBACK QUEUE ---
+    const [playbackQueue, setPlaybackQueue] = useState<Track[]>([])
+    const [showQueueView, setShowQueueView] = useState(false)
+
+    // --- METADATA EDIT ---
+    const [editingTrackMeta, setEditingTrackMeta] = useState<Track | null>(null)
+    const [metaEditValues, setMetaEditValues] = useState({ title: '', artist: '', album: '' })
 
     // --- COVER ART LAZY LOADING ---
     const [coverArtCache, setCoverArtCache] = useState<Record<string, string | null>>({})
@@ -117,6 +283,22 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const [highPassLevel, setHighPassLevel] = useState(0) // 0 to 1 (Freq)
     const [delayLevel, setDelayLevel] = useState(0)     // 0 to 1 (Mix)
     const [stereoWidthLevel, setStereoWidthLevel] = useState(0) // 0 to 1 (Haas Mix)
+    // Phase 1 New Effects
+    const [lowPassLevel, setLowPassLevel] = useState(1)    // 0 to 1 (1 = open, 0 = muffled)
+    const [panningLevel, setPanningLevel] = useState(0)    // -1 to 1 (L to R)
+    const [compressorLevel, setCompressorLevel] = useState(0) // 0 to 1 (amount)
+    // Phase 2 New Effects
+    const [flangerLevel, setFlangerLevel] = useState(0)   // 0 to 1 (intensity)
+    const [tremoloLevel, setTremoloLevel] = useState(0)   // 0 to 1 (depth)
+    // Phase 3 New Effects
+    const [audio8DLevel, setAudio8DLevel] = useState(0)   // 0 to 1 (rotation speed)
+    // 8-band EQ
+    const [eqBands, setEqBands] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0])
+
+    // Phase 4: A-B Loop
+    const [loopA, setLoopA] = useState<number | null>(null)
+    const [loopB, setLoopB] = useState<number | null>(null)
+    const [isLoopActive, setIsLoopActive] = useState(false)
 
     // --- FX PRESETS STATE ---
     interface FxPreset {
@@ -268,6 +450,11 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const currentAudioPathRef = useRef<string | null>(null)
     const shouldAutoPlayRef = useRef<boolean>(false) // Track if we should auto-play next track
 
+    // Phase 4 Refs for Loop
+    const loopARef = useRef<number | null>(null)
+    const loopBRef = useRef<number | null>(null)
+    const isLoopActiveRef = useRef<boolean>(false)
+
     // Web Audio API Refs
     const audioContextRef = useRef<AudioContext | null>(null)
     const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null)
@@ -284,6 +471,42 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     const dryGainNodeRef = useRef<GainNode | null>(null)
     const wetGainNodeRef = useRef<GainNode | null>(null) // Reverb
     const stereoWidthGainNodeRef = useRef<GainNode | null>(null) // Haas
+    // Phase 1 New Nodes
+    const lowPassNodeRef = useRef<BiquadFilterNode | null>(null)
+    const pannerNodeRef = useRef<StereoPannerNode | null>(null)
+    const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null)
+    // Phase 2 New Nodes (modulation effects need gain nodes for wet mix)
+    const flangerGainRef = useRef<GainNode | null>(null)
+    const flangerDelayRef = useRef<DelayNode | null>(null)
+    const flangerLfoRef = useRef<OscillatorNode | null>(null)
+    const tremoloGainRef = useRef<GainNode | null>(null)
+    const tremoloLfoRef = useRef<OscillatorNode | null>(null)
+    const tremoloDepthRef = useRef<GainNode | null>(null)
+    // Phase 3 New Nodes
+    const audio8DPannerRef = useRef<StereoPannerNode | null>(null)
+    const audio8DLfoRef = useRef<OscillatorNode | null>(null)
+    const audio8DGainRef = useRef<GainNode | null>(null)
+    // 8-band EQ
+    const eqNodesRef = useRef<BiquadFilterNode[]>([])
+
+    // Normalization
+    const normGainNodeRef = useRef<GainNode | null>(null)
+    const normAnalyserRef = useRef<AnalyserNode | null>(null)
+    const normAnimFrameRef = useRef<number | null>(null)
+
+    // Crossfade
+    const crossfadeActiveRef = useRef(false)
+    const crossfadeDurationRef = useRef(crossfadeDuration)
+
+    // Sync crossfade duration ref
+    useEffect(() => { crossfadeDurationRef.current = crossfadeDuration }, [crossfadeDuration])
+
+    // Sync loop state with refs
+    useEffect(() => {
+        loopARef.current = loopA
+        loopBRef.current = loopB
+        isLoopActiveRef.current = isLoopActive
+    }, [loopA, loopB, isLoopActive])
 
     const currentTrack = currentTrackIndex >= 0 ? tracks[currentTrackIndex] : null
 
@@ -304,6 +527,65 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         if (coverArtCache[currentTrack.path] === null) { setDisplayedArt(null); return }
         // Otherwise: still loading — keep previous displayedArt
     }, [currentTrack?.path, coverArtCache, getTrackCoverArt])
+
+    // Adaptive colors — extract vibrant color and matching theme from album art
+    useEffect(() => {
+        if (!adaptiveColors || !displayedArt) return
+
+        let cancelled = false
+        analyzeAlbumArt(displayedArt).then(result => {
+            if (cancelled || !result) return
+
+            const hexToRgb = (hex: string) => ({
+                r: parseInt(hex.slice(1, 3), 16),
+                g: parseInt(hex.slice(3, 5), 16),
+                b: parseInt(hex.slice(5, 7), 16)
+            })
+            const darken = (r: number, g: number, b: number, pct: number) => ({
+                r: Math.round(r * (1 - pct / 100)),
+                g: Math.round(g * (1 - pct / 100)),
+                b: Math.round(b * (1 - pct / 100))
+            })
+            const rgbToHex = (r: number, g: number, b: number) =>
+                '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+
+            const root = document.documentElement.style
+
+            // Apply accent color
+            const accent = hexToRgb(result.color)
+            const secondary = darken(accent.r, accent.g, accent.b, 20)
+            const tertiary = darken(accent.r, accent.g, accent.b, 35)
+
+            root.setProperty('--accent-rgb', `${accent.r}, ${accent.g}, ${accent.b}`)
+            root.setProperty('--accent-primary', result.color)
+            root.setProperty('--accent-secondary', rgbToHex(secondary.r, secondary.g, secondary.b))
+            root.setProperty('--accent-tertiary', rgbToHex(tertiary.r, tertiary.g, tertiary.b))
+            root.setProperty('--accent-success', result.color)
+            root.setProperty('--shadow-glow', `0 0 20px rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.3)`)
+
+            // Apply matching theme
+            const preset = THEME_PRESETS[result.theme]
+            const c = preset.colors
+            root.setProperty('--bg-primary', c.bgPrimary)
+            root.setProperty('--bg-secondary', c.bgSecondary)
+            root.setProperty('--bg-tertiary', c.bgTertiary)
+            root.setProperty('--bg-glass', c.bgGlass)
+            root.setProperty('--bg-glass-hover', c.bgGlassHover)
+            root.setProperty('--bg-frosted', c.bgFrosted)
+            root.setProperty('--text-primary', c.textPrimary)
+            root.setProperty('--text-secondary', c.textSecondary)
+            root.setProperty('--text-muted', c.textMuted)
+            root.setProperty('--overlay-rgb', c.overlayRgb)
+            root.setProperty('--fx-overlay-bg', c.fxOverlayBg)
+            root.setProperty('--shadow-sm', c.shadowSm)
+            root.setProperty('--shadow-md', c.shadowMd)
+            root.setProperty('--border-glass', c.borderGlass)
+            root.setProperty('--player-bg-brightness', c.playerBgBrightness)
+            root.setProperty('--player-bg-opacity', c.playerBgOpacity)
+        })
+
+        return () => { cancelled = true }
+    }, [displayedArt, adaptiveColors])
 
     // Fetch cover art for active playlist's first 4 tracks (for auto-cover grid)
     useEffect(() => {
@@ -368,21 +650,38 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         highPass.type = 'highpass'
         highPass.frequency.value = 0 // Start open (no cut)
 
-        // 2. Bass (Tone)
+        // 2. Low Pass (Muffled Effect) - NEW
+        const lowPass = ctx.createBiquadFilter()
+        lowPass.type = 'lowpass'
+        lowPass.frequency.value = 20000 // Start fully open
+
+        // 3. Bass (Tone)
         const bassFilter = ctx.createBiquadFilter()
         bassFilter.type = 'lowshelf'
         bassFilter.frequency.value = 200
 
-        // 3. Saturation (Drive)
+        // 4. Saturation (Drive)
         const saturationShaper = ctx.createWaveShaper()
         saturationShaper.curve = makeSaturationCurve(0)
         saturationShaper.oversample = '4x'
 
-        // 4. Reverb (Space)
+        // 5. Compressor - NEW
+        const compressor = ctx.createDynamicsCompressor()
+        compressor.threshold.value = 0   // Will be adjusted by level
+        compressor.knee.value = 30
+        compressor.ratio.value = 1       // 1 = no compression
+        compressor.attack.value = 0.003
+        compressor.release.value = 0.25
+
+        // 6. Panner (L/R) - NEW
+        const panner = ctx.createStereoPanner()
+        panner.pan.value = 0 // Center
+
+        // 7. Reverb (Space)
         const reverbConvolver = ctx.createConvolver()
         reverbConvolver.buffer = createReverbImpulse(ctx)
 
-        // 5. Delay (Echo)
+        // 8. Delay (Echo)
         const delay = ctx.createDelay(1.0)
         delay.delayTime.value = 0.35 // 350ms echo
         const delayFeedback = ctx.createGain()
@@ -390,8 +689,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         const delayWetGain = ctx.createGain()
         delayWetGain.gain.value = 0
 
-        // 6. Stereo Width (Haas Effect)
-        // We split channels, delay Right by ~15ms, then merge.
+        // 9. Stereo Width (Haas Effect)
         const widthSplitter = ctx.createChannelSplitter(2)
         const widthDelay = ctx.createDelay()
         widthDelay.delayTime.value = 0.015 // 15ms Haas
@@ -406,12 +704,15 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         wetGain.gain.value = 0
 
         // --- Routing ---
-        // Chain: Source -> HighPass -> Bass -> Saturation -> HUB
+        // Chain: Source -> HighPass -> LowPass -> Bass -> Saturation -> Compressor -> Panner -> HUB
         source.connect(highPass)
-        highPass.connect(bassFilter)
+        highPass.connect(lowPass)
+        lowPass.connect(bassFilter)
         bassFilter.connect(saturationShaper)
+        saturationShaper.connect(compressor)
+        compressor.connect(panner)
 
-        const hub = saturationShaper // The processed "dry signal" hub
+        const hub = panner // The processed "dry signal" hub
 
         // Path A: Dry Output
         hub.connect(dryGain)
@@ -431,21 +732,104 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
 
         // Path D: Stereo Width (Haas Side-chain)
         hub.connect(widthSplitter)
-        // Left goes direct to merger (ch 0)
         widthSplitter.connect(widthMerger, 0, 0)
-        // Right goes through delay then to merger (ch 1)
         widthSplitter.connect(widthDelay, 1)
         widthDelay.connect(widthMerger, 0, 1)
-
         widthMerger.connect(widthGain)
         widthGain.connect(ctx.destination)
 
+        // === PHASE 2: MODULATION EFFECTS (EXTREME VERSION) ===
+
+        // Path F: Flanger (EXTREME jet engine / alien sound)
+        const flangerGain = ctx.createGain()
+        flangerGain.gain.value = 0
+        const flangerDelay = ctx.createDelay(0.1)
+        flangerDelay.delayTime.value = 0.015 // 15ms base delay
+        const flangerFeedback = ctx.createGain()
+        flangerFeedback.gain.value = 0.95  // EXTREME feedback - almost oscillating
+        hub.connect(flangerDelay)
+        flangerDelay.connect(flangerGain)
+        flangerDelay.connect(flangerFeedback)
+        flangerFeedback.connect(flangerDelay)
+        flangerGain.connect(ctx.destination)
+        // Flanger LFO - extreme modulation
+        const flangerLfo = ctx.createOscillator()
+        const flangerLfoGain = ctx.createGain()
+        flangerLfo.type = 'sine'
+        flangerLfo.frequency.value = 0.1 // Very slow for dramatic sweep
+        flangerLfoGain.gain.value = 0.02 // Modulate 20ms (EXTREME)
+        flangerLfo.connect(flangerLfoGain)
+        flangerLfoGain.connect(flangerDelay.delayTime)
+        flangerLfo.start()
+
+        // Path G: Tremolo (EXTREME helicopter chop)
+        const tremoloGain = ctx.createGain()
+        tremoloGain.gain.value = 1
+        const tremoloDepth = ctx.createGain()
+        tremoloDepth.gain.value = 0
+        hub.connect(tremoloGain)
+        tremoloGain.connect(ctx.destination)
+        // Tremolo LFO - fast for helicopter effect
+        const tremoloLfo = ctx.createOscillator()
+        tremoloLfo.type = 'square' // Square wave for hard chop
+        tremoloLfo.frequency.value = 10 // Fast 10Hz chop
+        tremoloLfo.connect(tremoloDepth)
+        tremoloDepth.connect(tremoloGain.gain)
+        tremoloLfo.start()
+
+        // === PHASE 3: NEW EFFECTS ===
+
+        // Path H: 8D Audio (auto-rotation panning)
+        const audio8DPanner = ctx.createStereoPanner()
+        audio8DPanner.pan.value = 0
+        const audio8DGain = ctx.createGain()
+        audio8DGain.gain.value = 0 // Wet mix
+        hub.connect(audio8DPanner)
+        audio8DPanner.connect(audio8DGain)
+        audio8DGain.connect(ctx.destination)
+        // 8D LFO - rotates pan L to R continuously
+        const audio8DLfo = ctx.createOscillator()
+        const audio8DLfoGain = ctx.createGain()
+        audio8DLfo.type = 'sine'
+        audio8DLfo.frequency.value = 0.15 // Slow rotation
+        audio8DLfoGain.gain.value = 1 // Full L-R sweep
+        audio8DLfo.connect(audio8DLfoGain)
+        audio8DLfoGain.connect(audio8DPanner.pan)
+        audio8DLfo.start()
+
+        // 8-band EQ chain (in series, inserted into dry path)
+        const eqFilters: BiquadFilterNode[] = EQ_BANDS.map((band) => {
+            const filter = ctx.createBiquadFilter()
+            filter.type = band.type
+            filter.frequency.value = band.freq
+            if (band.type === 'peaking') filter.Q.value = 1.0
+            filter.gain.value = 0
+            return filter
+        })
+        // Insert EQ into dry path: dryGain → eq[0] → eq[1] → ... → eq[7] → normGain → destination
+        dryGain.disconnect()
+        dryGain.connect(eqFilters[0])
+        for (let i = 0; i < eqFilters.length - 1; i++) {
+            eqFilters[i].connect(eqFilters[i + 1])
+        }
+
+        // Normalization gain node (after EQ, before destination)
+        const normGain = ctx.createGain()
+        normGain.gain.value = 1.0
+        const normAnalyser = ctx.createAnalyser()
+        normAnalyser.fftSize = 2048
+        eqFilters[eqFilters.length - 1].connect(normAnalyser)
+        normAnalyser.connect(normGain)
+        normGain.connect(ctx.destination)
 
         // Store Refs
         sourceNodeRef.current = source
         highPassNodeRef.current = highPass
+        lowPassNodeRef.current = lowPass
         bassNodeRef.current = bassFilter
         saturationNodeRef.current = saturationShaper
+        compressorNodeRef.current = compressor
+        pannerNodeRef.current = panner
         reverbNodeRef.current = reverbConvolver
         delayNodeRef.current = delay
         delayGainNodeRef.current = delayWetGain
@@ -454,16 +838,44 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         wetGainNodeRef.current = wetGain
         stereoWidthGainNodeRef.current = widthGain
 
+        // Phase 2 refs
+        flangerGainRef.current = flangerGain
+        flangerDelayRef.current = flangerDelay
+        flangerLfoRef.current = flangerLfo
+        tremoloGainRef.current = tremoloGain
+        tremoloLfoRef.current = tremoloLfo
+        tremoloDepthRef.current = tremoloDepth
+
+        // Phase 3 refs
+        audio8DPannerRef.current = audio8DPanner
+        audio8DLfoRef.current = audio8DLfo
+        audio8DGainRef.current = audio8DGain
+        // EQ refs
+        eqNodesRef.current = eqFilters
+        // Normalization refs
+        normGainNodeRef.current = normGain
+        normAnalyserRef.current = normAnalyser
+
         // Apply Initial Values
         bassFilter.gain.value = bassLevel
         saturationShaper.curve = makeSaturationCurve(saturationLevel)
         dryGain.gain.value = 1
         wetGain.gain.value = reverbLevel
-        highPass.frequency.value = highPassLevel * 2000 // Map 0-1 to 0-2000Hz
+        highPass.frequency.value = highPassLevel * 3000
+        lowPass.frequency.value = lowPassLevel * 19920 + 80 // Map 0-1 to 80-20000Hz
         delayWetGain.gain.value = delayLevel
         widthGain.gain.value = stereoWidthLevel
+        panner.pan.value = panningLevel
+        // Compressor: map 0-1 to threshold -100 to 0, ratio 1 to 20
+        compressor.threshold.value = -100 * compressorLevel
+        compressor.ratio.value = 1 + (19 * compressorLevel)
+        // Phase 2 initial values
+        flangerGain.gain.value = flangerLevel
+        tremoloDepth.gain.value = tremoloLevel
+        // Phase 3 initial values
+        audio8DGain.gain.value = audio8DLevel
 
-        console.log("AudioFX: Graph Connected successfully")
+        console.log("AudioFX: Graph Connected successfully (Phase 1 + 2 + 3 effects)")
     }, [])
 
     // Initialize Audio Engine
@@ -535,6 +947,98 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         }
     }, [pitchLevel])
 
+    // Low Pass (Muffled) - NEW
+    useEffect(() => {
+        if (lowPassNodeRef.current && audioContextRef.current) {
+            // Map 0-1 to 80-20000Hz (0 = very muffled, 1 = open)
+            const freq = lowPassLevel * 19920 + 80
+            lowPassNodeRef.current.frequency.setTargetAtTime(freq, audioContextRef.current.currentTime, 0.1)
+        }
+    }, [lowPassLevel])
+
+    // Panning (L/R) - NEW
+    useEffect(() => {
+        if (pannerNodeRef.current && audioContextRef.current) {
+            pannerNodeRef.current.pan.setTargetAtTime(panningLevel, audioContextRef.current.currentTime, 0.05)
+        }
+    }, [panningLevel])
+
+    // Compressor - NEW
+    useEffect(() => {
+        if (compressorNodeRef.current) {
+            // EXTREME Compressor: map 0-1 to threshold -100 to 0, ratio 1 to 20
+            compressorNodeRef.current.threshold.value = -100 * compressorLevel
+            compressorNodeRef.current.ratio.value = 1 + (19 * compressorLevel)
+        }
+    }, [compressorLevel])
+
+    // Flanger - Phase 2
+    useEffect(() => {
+        if (flangerGainRef.current && audioContextRef.current) {
+            flangerGainRef.current.gain.setTargetAtTime(flangerLevel, audioContextRef.current.currentTime, 0.1)
+        }
+    }, [flangerLevel])
+
+    // Tremolo - Phase 2
+    useEffect(() => {
+        if (tremoloDepthRef.current && audioContextRef.current) {
+            // Map 0-1 to 0-1 (full depth for intense choppy effect)
+            tremoloDepthRef.current.gain.setTargetAtTime(tremoloLevel, audioContextRef.current.currentTime, 0.1)
+        }
+    }, [tremoloLevel])
+
+    // 8D Audio - Phase 3
+    useEffect(() => {
+        if (audio8DGainRef.current && audioContextRef.current) {
+            audio8DGainRef.current.gain.setTargetAtTime(audio8DLevel, audioContextRef.current.currentTime, 0.1)
+        }
+    }, [audio8DLevel])
+
+    // 8-band EQ
+    useEffect(() => {
+        if (eqNodesRef.current.length > 0 && audioContextRef.current) {
+            eqBands.forEach((gain, i) => {
+                if (eqNodesRef.current[i]) {
+                    eqNodesRef.current[i].gain.setTargetAtTime(gain, audioContextRef.current!.currentTime, 0.05)
+                }
+            })
+        }
+    }, [eqBands])
+
+    // Audio Normalization
+    useEffect(() => {
+        if (!normGainNodeRef.current || !normAnalyserRef.current || !audioContextRef.current) return
+
+        if (!audioNormalization) {
+            normGainNodeRef.current.gain.value = 1.0
+            if (normAnimFrameRef.current) cancelAnimationFrame(normAnimFrameRef.current)
+            return
+        }
+
+        const analyser = normAnalyserRef.current
+        const gainNode = normGainNodeRef.current
+        const dataArray = new Float32Array(analyser.fftSize)
+        const targetRms = 0.2
+
+        const normalize = () => {
+            analyser.getFloatTimeDomainData(dataArray)
+            let sumSquares = 0
+            for (let i = 0; i < dataArray.length; i++) {
+                sumSquares += dataArray[i] * dataArray[i]
+            }
+            const rms = Math.sqrt(sumSquares / dataArray.length)
+            if (rms > 0.001) {
+                const desiredGain = Math.min(3.0, Math.max(0.3, targetRms / rms))
+                gainNode.gain.setTargetAtTime(desiredGain, audioContextRef.current!.currentTime, 0.3)
+            }
+            normAnimFrameRef.current = requestAnimationFrame(normalize)
+        }
+        normAnimFrameRef.current = requestAnimationFrame(normalize)
+
+        return () => {
+            if (normAnimFrameRef.current) cancelAnimationFrame(normAnimFrameRef.current)
+        }
+    }, [audioNormalization])
 
     // Load tracks
     const loadTracks = useCallback(async () => {
@@ -697,7 +1201,97 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         }, 200)
     }
 
+    // --- SLEEP TIMER LOGIC ---
+    useEffect(() => { sleepTimerModeRef.current = sleepTimerMode }, [sleepTimerMode])
 
+    const startSleepTimer = useCallback((minutes: number) => {
+        setSleepTimerMode('time')
+        setSleepTimerEnd(Date.now() + minutes * 60 * 1000)
+        setShowSleepMenu(false)
+    }, [])
+
+    const startEndOfTrackSleep = useCallback(() => {
+        setSleepTimerMode('endOfTrack')
+        setSleepTimerEnd(null)
+        setShowSleepMenu(false)
+    }, [])
+
+    const cancelSleepTimer = useCallback(() => {
+        setSleepTimerMode('off')
+        setSleepTimerEnd(null)
+        setSleepTimerRemaining('')
+        setShowSleepMenu(false)
+    }, [])
+
+    // Sleep timer countdown
+    useEffect(() => {
+        if (sleepTimerMode !== 'time' || !sleepTimerEnd) return
+        const interval = setInterval(() => {
+            const remaining = sleepTimerEnd - Date.now()
+            if (remaining <= 0) {
+                // Fade out and pause
+                if (audioRef.current) {
+                    const fadeSteps = 30
+                    const fadeInterval = 100 // 3 second fade
+                    const originalVolume = audioRef.current.volume
+                    let step = 0
+                    const fade = setInterval(() => {
+                        step++
+                        if (audioRef.current) {
+                            audioRef.current.volume = Math.max(0, originalVolume * (1 - step / fadeSteps))
+                        }
+                        if (step >= fadeSteps) {
+                            clearInterval(fade)
+                            if (audioRef.current) {
+                                audioRef.current.pause()
+                                audioRef.current.volume = originalVolume
+                            }
+                        }
+                    }, fadeInterval)
+                }
+                cancelSleepTimer()
+            } else {
+                const mins = Math.floor(remaining / 60000)
+                const secs = Math.floor((remaining % 60000) / 1000)
+                setSleepTimerRemaining(`${mins}:${secs.toString().padStart(2, '0')}`)
+            }
+        }, 1000)
+        return () => clearInterval(interval)
+    }, [sleepTimerMode, sleepTimerEnd, cancelSleepTimer])
+
+    // --- QUEUE LOGIC ---
+    const playNext = useCallback((track: Track) => {
+        setPlaybackQueue(q => [track, ...q])
+        setTrackMenuOpen(null)
+    }, [])
+
+    const addToQueue = useCallback((track: Track) => {
+        setPlaybackQueue(q => [...q, track])
+        setTrackMenuOpen(null)
+    }, [])
+
+    // --- METADATA EDIT LOGIC ---
+    const openMetadataEdit = useCallback((track: Track) => {
+        setEditingTrackMeta(track)
+        setMetaEditValues({ title: track.title, artist: track.artist, album: track.album })
+        setTrackMenuOpen(null)
+    }, [])
+
+    const saveMetadataEdit = useCallback(async () => {
+        if (!editingTrackMeta) return
+        try {
+            const result = await (window.electronAPI as any).editTrackMetadata({
+                filePath: editingTrackMeta.path,
+                metadata: metaEditValues
+            })
+            if (result.success && onRefreshTracks) {
+                await onRefreshTracks()
+            }
+        } catch (e) {
+            console.error('Failed to edit metadata:', e)
+        }
+        setEditingTrackMeta(null)
+    }, [editingTrackMeta, metaEditValues, onRefreshTracks])
 
     useEffect(() => {
         if (isActive) {
@@ -738,7 +1332,40 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         audioRef.current = audio
         // Connect audio element immediately if strict context needed, but usually on play is fine.
 
-        audio.addEventListener('timeupdate', () => setCurrentTime(audio.currentTime))
+        audio.addEventListener('timeupdate', () => {
+            setCurrentTime(audio.currentTime)
+            // Phase 4: A-B Loop Logic
+            if (isLoopActiveRef.current && loopARef.current !== null && loopBRef.current !== null) {
+                if (audio.currentTime >= loopBRef.current) {
+                    audio.currentTime = loopARef.current
+                }
+            }
+            // Crossfade trigger
+            if (crossfadeDurationRef.current > 0 && audio.duration && !crossfadeActiveRef.current) {
+                const timeLeft = audio.duration - audio.currentTime
+                if (timeLeft <= crossfadeDurationRef.current && timeLeft > 0) {
+                    crossfadeActiveRef.current = true
+                    // Fade out current track
+                    const fadeDuration = crossfadeDurationRef.current
+                    const startVolume = audio.volume
+                    const fadeOutInterval = setInterval(() => {
+                        const remaining = audio.duration - audio.currentTime
+                        if (remaining <= 0 || !audio.duration) {
+                            clearInterval(fadeOutInterval)
+                            return
+                        }
+                        audio.volume = Math.max(0, startVolume * (remaining / fadeDuration))
+                    }, 50)
+                    // Trigger next track with auto-play
+                    shouldAutoPlayRef.current = true
+                    // The onended handler will fire naturally - reset crossfade flag
+                    setTimeout(() => {
+                        crossfadeActiveRef.current = false
+                        audio.volume = startVolume
+                    }, fadeDuration * 1000 + 500)
+                }
+            }
+        })
         audio.addEventListener('loadedmetadata', () => {
             console.log('[Audio] Metadata loaded, duration:', audio.duration)
             setDuration(audio.duration)
@@ -783,6 +1410,9 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         // Auto-play if triggered by track ending or if already playing
         if (isPlaying || shouldAutoPlayRef.current) {
             shouldAutoPlayRef.current = false
+            if (audioContextRef.current?.state === 'suspended') {
+                audioContextRef.current.resume()
+            }
             audio.play().catch(err => {
                 console.error('[Audio] Play failed:', err)
                 setIsPlaying(false)
@@ -804,11 +1434,22 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
 
     const handlePlayPause = useCallback(() => {
         if (!audioRef.current || !currentTrack) return
-        if (audioContextRef.current?.state === 'suspended') {
-            audioContextRef.current.resume()
+        if (isPlaying) {
+            audioRef.current.pause()
+        } else {
+            // Resume AudioContext and play audio concurrently to preserve user gesture context
+            if (audioContextRef.current?.state === 'suspended') {
+                audioContextRef.current.resume()
+            }
+            audioRef.current.play().catch(err => {
+                console.error('[Audio] Play failed, retrying with reload:', err)
+                // Recovery: reload source and retry
+                if (audioRef.current && currentAudioPathRef.current) {
+                    audioRef.current.load()
+                    audioRef.current.play().catch(console.error)
+                }
+            })
         }
-        if (isPlaying) audioRef.current.pause()
-        else audioRef.current.play().catch(console.error)
     }, [currentTrack, isPlaying])
 
     // Global Shortcuts
@@ -828,12 +1469,23 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
     }, [handlePlayPause])
 
     const handleNext = useCallback(() => {
+        // Check queue first
+        if (playbackQueue.length > 0) {
+            const nextTrack = playbackQueue[0]
+            setPlaybackQueue(q => q.slice(1))
+            const globalIdx = tracks.findIndex(t => t.path === nextTrack.path)
+            if (globalIdx !== -1) {
+                shouldAutoPlayRef.current = true
+                setCurrentTrackIndex(globalIdx)
+            }
+            return
+        }
+
         const displayTracks = getDisplayTracks()
         if (displayTracks.length === 0) return
 
         const currentTrack = tracks[currentTrackIndex]
         if (!currentTrack) {
-            // Start playing first
             if (displayTracks.length > 0) {
                 const idx = tracks.findIndex(t => t.path === displayTracks[0].path)
                 if (idx !== -1) setCurrentTrackIndex(idx)
@@ -955,8 +1607,91 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         }
     }, [isPlaying, handlePlayPause, handlePrevious, handleNext])
 
+    // Broadcast playback state to mini player
+    useEffect(() => {
+        const api = window.electronAPI as any
+        if (!api?.syncPlaybackState) return
+        api.syncPlaybackState({
+            title: currentTrack?.title || 'Not Playing',
+            artist: currentTrack?.artist || '',
+            album: currentTrack?.album || '',
+            coverArt: currentTrack ? getTrackCoverArt(currentTrack) : null,
+            isPlaying,
+            currentTime,
+            duration,
+            volume,
+            theme,
+            accentColor
+        })
+    }, [currentTrack?.path, isPlaying, Math.floor(currentTime), duration, volume, theme, accentColor])
+
+    // Listen for mini player commands
+    useEffect(() => {
+        const api = window.electronAPI as any
+        if (!api?.onMiniPlayerCommand) return
+        const cleanup = api.onMiniPlayerCommand((command: string) => {
+            if (command.startsWith('seek:')) {
+                const time = parseFloat(command.split(':')[1])
+                if (!isNaN(time) && audioRef.current) {
+                    audioRef.current.currentTime = Math.max(0, Math.min(time, audioRef.current.duration || 0))
+                }
+                return
+            }
+            if (command.startsWith('volume:')) {
+                const vol = parseFloat(command.split(':')[1])
+                if (!isNaN(vol)) setVolume(Math.max(0, Math.min(1, vol)))
+                return
+            }
+            switch (command) {
+                case 'toggle': handlePlayPause(); break
+                case 'next': handleNext(); break
+                case 'prev': handlePrevious(); break
+                case 'play-random': {
+                    const displayTracks = getDisplayTracks()
+                    if (displayTracks.length > 0) {
+                        const randomIdx = Math.floor(Math.random() * displayTracks.length)
+                        const track = displayTracks[randomIdx]
+                        const globalIdx = tracks.findIndex(t => t.path === track.path)
+                        if (globalIdx !== -1) {
+                            shouldAutoPlayRef.current = true
+                            setCurrentTrackIndex(globalIdx)
+                        }
+                    }
+                    break
+                }
+            }
+        })
+        return cleanup
+    }, [handlePlayPause, handleNext, handlePrevious, getDisplayTracks, tracks])
+
     // Updated onEnded
     const onTrackEnded = useCallback(() => {
+        // Sleep timer: end of track mode
+        if (sleepTimerModeRef.current === 'endOfTrack') {
+            if (audioRef.current) {
+                // Fade out
+                const originalVolume = audioRef.current.volume
+                const fadeSteps = 30
+                let step = 0
+                const fade = setInterval(() => {
+                    step++
+                    if (audioRef.current) {
+                        audioRef.current.volume = Math.max(0, originalVolume * (1 - step / fadeSteps))
+                    }
+                    if (step >= fadeSteps) {
+                        clearInterval(fade)
+                        if (audioRef.current) {
+                            audioRef.current.pause()
+                            audioRef.current.volume = originalVolume
+                        }
+                    }
+                }, 100)
+            }
+            setSleepTimerMode('off')
+            setSleepTimerRemaining('')
+            return
+        }
+
         // Repeat One: Replay the same song
         if (repeatMode === 'one') {
             if (audioRef.current) {
@@ -972,12 +1707,10 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
 
         // Repeat Off: Play next until end of list, then stop
         if (repeatMode === 'off') {
-            // If we're at the last track, stop playback
-            if (currentIdx >= displayTracks.length - 1 && !isShuffle) {
+            if (currentIdx >= displayTracks.length - 1 && !isShuffle && playbackQueue.length === 0) {
                 setIsPlaying(false)
                 return
             }
-            // Otherwise, play next with auto-play
             shouldAutoPlayRef.current = true
             handleNext()
             return
@@ -986,7 +1719,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         // Repeat All: Always play next (handleNext wraps around at end)
         shouldAutoPlayRef.current = true
         handleNext()
-    }, [repeatMode, handleNext, getDisplayTracks, tracks, currentTrackIndex, isShuffle])
+    }, [repeatMode, handleNext, getDisplayTracks, tracks, currentTrackIndex, isShuffle, playbackQueue.length])
 
     // Handle Auto Next (Playlist aware)
     useEffect(() => {
@@ -1087,6 +1820,28 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
         const minutes = Math.floor(time / 60)
         const seconds = Math.floor(time % 60)
         return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
+    }
+
+    // A-B Loop Handlers
+    const handleSetLoopA = () => {
+        setLoopA(currentTime)
+        if (loopB !== null && currentTime >= loopB) {
+            setLoopB(null)
+            setIsLoopActive(false)
+        }
+    }
+
+    const handleSetLoopB = () => {
+        if (loopA !== null && currentTime > loopA) {
+            setLoopB(currentTime)
+            setIsLoopActive(true)
+        }
+    }
+
+    const clearLoop = () => {
+        setLoopA(null)
+        setLoopB(null)
+        setIsLoopActive(false)
     }
 
     // Helper to process image file
@@ -1206,7 +1961,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                 </div>
                             )
                         ) : displayedArt ? (
-                            <img src={displayedArt} alt="Album Art" />
+                            <CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} />
                         ) : (
                             <div className="no-art">
                                 <MusicIcon size={80} strokeWidth={1} style={{ opacity: 0.3 }} />
@@ -1280,10 +2035,17 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                     <option value="recent">Recent</option>
                                 </select>
                             </div>
+                            <button
+                                className={`compact-toggle-btn ${isCompact ? 'active' : ''}`}
+                                onClick={() => setIsCompact(!isCompact)}
+                                title={isCompact ? 'Normal view' : 'Compact view'}
+                            >
+                                <CompactIcon size={14} />
+                            </button>
                         </div>
                     </div>
 
-                    <div className="player-tracklist">
+                    <div className={`player-tracklist ${isCompact ? 'compact-list' : ''}`}>
                         <div
                             className="tracklist-scroll animate-enter"
                             key={activePlaylist ? activePlaylist.id : 'library'}
@@ -1342,16 +2104,139 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                     </div>
                 </div>
 
-                {showFx && (
-                    <div
-                        className={`fx-panel-overlay ${isClosing ? 'fade-out' : ''}`}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            closeFxPanel();
-                        }}
-                    >
-                        {/* Stop propagation on this container so sliders work without closing */}
-                        <div className="fx-controls-container" onClick={(e) => e.stopPropagation()}>
+            </div>
+
+            {showFx && (
+                <div
+                    className={`fx-panel-overlay ${isClosing ? 'fade-out' : ''}`}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        closeFxPanel();
+                    }}
+                >
+                    <div className="fx-controls-container" onClick={(e) => e.stopPropagation()}>
+                        <div className="fx-columns">
+                            <div className="fx-column">
+                                <div className="fx-section">
+                                    <div className="fx-section-header">Tone</div>
+                                    <div className="fx-row">
+                                        <label>Bass Boost</label>
+                                        <input type="range" min="-10" max="15" step="0.5" value={bassLevel}
+                                            onChange={(e) => { setBassLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={bassLevel.toString()} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Saturation</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={saturationLevel}
+                                            onChange={(e) => { setSaturationLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(saturationLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Low Pass</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={lowPassLevel}
+                                            onChange={(e) => { setLowPassLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={lowPassLevel < 1 ? 'Muffled' : 'Open'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Radio Filter</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={highPassLevel}
+                                            onChange={(e) => { setHighPassLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(highPassLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                </div>
+
+                                <div className="fx-section">
+                                    <div className="fx-section-header">Dynamics</div>
+                                    <div className="fx-row">
+                                        <label>Compress</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={compressorLevel}
+                                            onChange={(e) => { setCompressorLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(compressorLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Speed / Pitch</label>
+                                        <input type="range" min="0.25" max="3.0" step="0.01" value={pitchLevel}
+                                            onChange={(e) => { setPitchLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={pitchLevel + 'x'} />
+                                    </div>
+                                </div>
+
+                                <div className="fx-section">
+                                    <div className="fx-section-header">Modulation</div>
+                                    <div className="fx-row">
+                                        <label>Flanger</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={flangerLevel}
+                                            onChange={(e) => { setFlangerLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(flangerLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Tremolo</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={tremoloLevel}
+                                            onChange={(e) => { setTremoloLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(tremoloLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="fx-column">
+                                <div className="fx-section">
+                                    <div className="fx-section-header">Space</div>
+                                    <div className="fx-row">
+                                        <label>Reverb</label>
+                                        <input type="range" min="0" max="3" step="0.05" value={reverbLevel}
+                                            onChange={(e) => { setReverbLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={Math.round(reverbLevel * 100) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Echo</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={delayLevel}
+                                            onChange={(e) => { setDelayLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(delayLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Spatial</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={stereoWidthLevel}
+                                            onChange={(e) => { setStereoWidthLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={(stereoWidthLevel * 100).toFixed(0) + '%'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>8D Audio</label>
+                                        <input type="range" min="0" max="1" step="0.01" value={audio8DLevel}
+                                            onChange={(e) => { setAudio8DLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={audio8DLevel > 0 ? 'Rotating' : 'Off'} />
+                                    </div>
+                                    <div className="fx-row">
+                                        <label>Pan L/R</label>
+                                        <input type="range" min="-1" max="1" step="0.01" value={panningLevel}
+                                            onChange={(e) => { setPanningLevel(parseFloat(e.target.value)); markCustom() }}
+                                            title={panningLevel < 0 ? `L ${Math.abs(panningLevel * 100).toFixed(0)}%` : panningLevel > 0 ? `R ${(panningLevel * 100).toFixed(0)}%` : 'Center'} />
+                                    </div>
+                                </div>
+
+                                <div className="fx-section eq-section">
+                                    <div className="fx-section-header">Equalizer</div>
+                                    <div className="eq-band-row">
+                                        {EQ_BANDS.map((band, i) => (
+                                            <div className="eq-band" key={band.freq}>
+                                                <input
+                                                    type="range" min="-15" max="15" step="0.5"
+                                                    value={eqBands[i]}
+                                                    onChange={(e) => {
+                                                        const val = parseFloat(e.target.value)
+                                                        setEqBands(prev => { const next = [...prev]; next[i] = val; return next })
+                                                        markCustom()
+                                                    }}
+                                                    title={eqBands[i] > 0 ? `+${eqBands[i]}dB` : `${eqBands[i]}dB`}
+                                                />
+                                                <span className="eq-band-label">{band.label}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="fx-toolbar">
                             <div className="fx-presets-row">
                                 <select
                                     className="fx-preset-select"
@@ -1375,155 +2260,129 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                                     </button>
                                 )}
                             </div>
-                            <div className="fx-row">
-                                <label>Bass Boost</label>
-                                <input
-                                    type="range" min="-10" max="15" step="0.5"
-                                    value={bassLevel}
-                                    onChange={(e) => { setBassLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={bassLevel.toString()}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Reverb</label>
-                                <input
-                                    type="range" min="0" max="3" step="0.05"
-                                    value={reverbLevel}
-                                    onChange={(e) => { setReverbLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={Math.round(reverbLevel * 100) + '%'}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Speed / Pitch</label>
-                                <input
-                                    type="range" min="0.25" max="3.0" step="0.01"
-                                    value={pitchLevel}
-                                    onChange={(e) => { setPitchLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={pitchLevel + 'x'}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Saturation</label>
-                                <input
-                                    type="range" min="0" max="1" step="0.01"
-                                    value={saturationLevel}
-                                    onChange={(e) => { setSaturationLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={(saturationLevel * 100).toFixed(0) + '%'}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Radio Filter</label>
-                                <input
-                                    type="range" min="0" max="1" step="0.01"
-                                    value={highPassLevel}
-                                    onChange={(e) => { setHighPassLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={(highPassLevel * 100).toFixed(0) + '%'}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Echo</label>
-                                <input
-                                    type="range" min="0" max="1" step="0.01"
-                                    value={delayLevel}
-                                    onChange={(e) => { setDelayLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={(delayLevel * 100).toFixed(0) + '%'}
-                                />
-                            </div>
-                            <div className="fx-row">
-                                <label>Spatial</label>
-                                <input
-                                    type="range" min="0" max="1" step="0.01"
-                                    value={stereoWidthLevel}
-                                    onChange={(e) => { setStereoWidthLevel(parseFloat(e.target.value)); markCustom() }}
-                                    title={(stereoWidthLevel * 100).toFixed(0) + '%'}
-                                />
-                            </div>
-                            <div className="fx-reset">
-                                <button onClick={() => {
-                                    setBassLevel(0); setReverbLevel(0); setPitchLevel(1); setSaturationLevel(0);
-                                    setHighPassLevel(0); setDelayLevel(0); setStereoWidthLevel(0);
-                                    setActivePresetId(null);
-                                }}>Reset</button>
-                            </div>
+                            <button className="fx-reset-btn" onClick={() => {
+                                setBassLevel(0); setReverbLevel(0); setPitchLevel(1); setSaturationLevel(0);
+                                setHighPassLevel(0); setDelayLevel(0); setStereoWidthLevel(0);
+                                setLowPassLevel(1); setPanningLevel(0); setCompressorLevel(0);
+                                setFlangerLevel(0); setTremoloLevel(0);
+                                setAudio8DLevel(0);
+                                setEqBands([0, 0, 0, 0, 0, 0, 0, 0]);
+                                setActivePresetId(null);
+                            }}>Reset</button>
                         </div>
                     </div>
-                )}
+                </div>
+            )}
 
-                {/* Preset Name Modal */}
-                {showPresetNameModal && (
-                    <div className="fx-panel-overlay" onClick={() => setShowPresetNameModal(false)}>
-                        <div className="fx-controls-container" onClick={(e) => e.stopPropagation()} style={{ minWidth: 280 }}>
-                            <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>Save Preset</h3>
-                            <input
-                                type="text"
-                                placeholder="Preset name..."
-                                value={presetNameInput}
-                                onChange={(e) => setPresetNameInput(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') confirmSavePreset() }}
-                                autoFocus
+            {showPresetNameModal && (
+                <div className="fx-panel-overlay" onClick={() => setShowPresetNameModal(false)}>
+                    <div className="fx-controls-container" onClick={(e) => e.stopPropagation()} style={{ minWidth: 280 }}>
+                        <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>Save Preset</h3>
+                        <input
+                            type="text"
+                            placeholder="Preset name..."
+                            value={presetNameInput}
+                            onChange={(e) => setPresetNameInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') confirmSavePreset() }}
+                            autoFocus
+                            style={{
+                                width: '100%',
+                                padding: '10px 12px',
+                                background: 'rgba(var(--overlay-rgb), 0.08)',
+                                border: '1px solid rgba(var(--overlay-rgb), 0.15)',
+                                borderRadius: 8,
+                                color: 'var(--text-primary)',
+                                fontSize: 14,
+                                outline: 'none',
+                                marginBottom: 12
+                            }}
+                        />
+                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={() => setShowPresetNameModal(false)}
                                 style={{
-                                    width: '100%',
-                                    padding: '10px 12px',
-                                    background: 'rgba(var(--overlay-rgb), 0.08)',
-                                    border: '1px solid rgba(var(--overlay-rgb), 0.15)',
-                                    borderRadius: 8,
+                                    padding: '8px 16px',
+                                    background: 'rgba(var(--overlay-rgb), 0.1)',
+                                    border: 'none',
+                                    borderRadius: 6,
                                     color: 'var(--text-primary)',
-                                    fontSize: 14,
-                                    outline: 'none',
-                                    marginBottom: 12
+                                    cursor: 'pointer'
                                 }}
-                            />
-                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                                <button
-                                    onClick={() => setShowPresetNameModal(false)}
-                                    style={{
-                                        padding: '8px 16px',
-                                        background: 'rgba(var(--overlay-rgb), 0.1)',
-                                        border: 'none',
-                                        borderRadius: 6,
-                                        color: 'var(--text-primary)',
-                                        cursor: 'pointer'
-                                    }}
-                                >Cancel</button>
-                                <button
-                                    onClick={confirmSavePreset}
-                                    disabled={!presetNameInput.trim()}
-                                    style={{
-                                        padding: '8px 16px',
-                                        background: presetNameInput.trim() ? 'var(--accent-primary)' : 'rgba(var(--overlay-rgb), 0.1)',
-                                        border: 'none',
-                                        borderRadius: 6,
-                                        color: presetNameInput.trim() ? 'white' : 'var(--text-primary)',
-                                        cursor: presetNameInput.trim() ? 'pointer' : 'default',
-                                        opacity: presetNameInput.trim() ? 1 : 0.5
-                                    }}
-                                >Save</button>
-                            </div>
+                            >Cancel</button>
+                            <button
+                                onClick={confirmSavePreset}
+                                disabled={!presetNameInput.trim()}
+                                style={{
+                                    padding: '8px 16px',
+                                    background: presetNameInput.trim() ? 'var(--accent-primary)' : 'rgba(var(--overlay-rgb), 0.1)',
+                                    border: 'none',
+                                    borderRadius: 6,
+                                    color: presetNameInput.trim() ? 'white' : 'var(--text-primary)',
+                                    cursor: presetNameInput.trim() ? 'pointer' : 'default',
+                                    opacity: presetNameInput.trim() ? 1 : 0.5
+                                }}
+                            >Save</button>
                         </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
 
             <div className="player-bottom-bar">
-                <div
-                    className="progress-area"
-                    onMouseDown={handleScrubStart}
-                    onClick={handleSeek}
-                >
+                {/* Row 1: Progress */}
+                <div className="progress-row">
+                    <span className="time-display">{formatTime(isScrubbing ? scrubTime : currentTime)}</span>
                     <div
-                        className="progress-fill"
-                        style={{ width: duration ? `${((isScrubbing ? scrubTime : currentTime) / duration) * 100}%` : '0%' }}
-                    />
+                        className="progress-area"
+                        onMouseDown={handleScrubStart}
+                        onClick={handleSeek}
+                    >
+                        <div
+                            className="progress-fill"
+                            style={{ width: duration ? `${((isScrubbing ? scrubTime : currentTime) / duration) * 100}%` : '0%' }}
+                        />
+
+                        {/* A-B Loop Markers */}
+                        {loopA !== null && duration > 0 && (
+                            <div
+                                className="loop-marker marker-a"
+                                style={{ left: `${(loopA / duration) * 100}%` }}
+                            />
+                        )}
+                        {loopB !== null && duration > 0 && (
+                            <div
+                                className="loop-marker marker-b"
+                                style={{ left: `${(loopB / duration) * 100}%` }}
+                            />
+                        )}
+                        {isLoopActive && loopA !== null && loopB !== null && duration > 0 && (
+                            <div
+                                className="loop-range-highlight"
+                                style={{
+                                    left: `${(loopA / duration) * 100}%`,
+                                    width: `${((loopB - loopA) / duration) * 100}%`
+                                }}
+                            />
+                        )}
+                    </div>
+                    <span className="time-display">{formatTime(duration)}</span>
                 </div>
 
+                {/* Row 2: Controls */}
                 <div className="controls-row">
                     <div className="controls-left">
-                        <span className="time-display">{formatTime(isScrubbing ? scrubTime : currentTime)} / {formatTime(duration)}</span>
-                    </div>
-
-                    <div className="controls-center">
                         <button
-                            className={`control-btn ${showFx ? 'active-fx-btn' : ''}`}
+                            className="control-btn-sm"
+                            onClick={(e) => {
+                                const api = window.electronAPI as any
+                                if (api?.openMiniPlayer) api.openMiniPlayer({ x: e.screenX, y: e.screenY })
+                            }}
+                            title="Mini Player"
+                            style={{ color: 'var(--text-secondary)' }}
+                        >
+                            <MiniPlayerIcon size={16} />
+                        </button>
+                        <button
+                            className={`control-btn-sm ${showFx ? 'active-fx-btn' : ''}`}
                             onClick={(e) => {
                                 e.stopPropagation();
                                 if (showFx) closeFxPanel();
@@ -1532,10 +2391,82 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                             title="Audio Effects"
                             style={{ color: showFx ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
                         >
-                            <SparklesIcon size={18} />
+                            <SparklesIcon size={16} />
                         </button>
+                        <button
+                            className={`control-btn-sm ${showPlaylistBrowser ? 'active-fx-btn' : ''}`}
+                            onClick={() => {
+                                if (showPlaylistBrowser) closePlaylistBrowser()
+                                else setShowPlaylistBrowser(true)
+                            }}
+                            title="Playlists"
+                            style={{ color: showPlaylistBrowser ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
+                        >
+                            <PlaylistIcon size={16} />
+                        </button>
+                        {playbackQueue.length > 0 && (
+                            <button
+                                className={`control-btn-sm ${showQueueView ? 'active-fx-btn' : ''}`}
+                                onClick={() => setShowQueueView(!showQueueView)}
+                                title={`Queue (${playbackQueue.length})`}
+                                style={{ color: showQueueView ? 'var(--accent-primary)' : 'var(--text-secondary)', position: 'relative' }}
+                            >
+                                <QueueIcon size={16} />
+                                <span className="queue-badge">{playbackQueue.length}</span>
+                            </button>
+                        )}
+                        <div style={{ position: 'relative' }}>
+                            <button
+                                className={`control-btn-sm ${sleepTimerMode !== 'off' ? 'active-fx-btn' : ''}`}
+                                onClick={() => setShowSleepMenu(!showSleepMenu)}
+                                title={sleepTimerMode !== 'off' ? `Sleep: ${sleepTimerRemaining || 'End of track'}` : 'Sleep Timer'}
+                                style={{ color: sleepTimerMode !== 'off' ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
+                            >
+                                <ClockIcon size={16} />
+                            </button>
+                            {sleepTimerMode !== 'off' && sleepTimerRemaining && (
+                                <span className="sleep-timer-indicator">{sleepTimerRemaining}</span>
+                            )}
+                            {showSleepMenu && (
+                                <div className="sleep-timer-menu">
+                                    {sleepTimerMode !== 'off' ? (
+                                        <div className="menu-item" onClick={cancelSleepTimer}>
+                                            <CloseIcon size={14} />
+                                            <span>Cancel Timer</span>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="menu-item" onClick={() => startSleepTimer(15)}>15 min</div>
+                                            <div className="menu-item" onClick={() => startSleepTimer(30)}>30 min</div>
+                                            <div className="menu-item" onClick={() => startSleepTimer(45)}>45 min</div>
+                                            <div className="menu-item" onClick={() => startSleepTimer(60)}>60 min</div>
+                                            <div className="menu-item" onClick={startEndOfTrackSleep}>End of Track</div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        <div className="ab-loop-controls">
+                            <button
+                                className={`ab-btn ${loopA !== null ? 'set' : ''}`}
+                                onClick={handleSetLoopA}
+                                title={loopA !== null ? `A: ${formatTime(loopA)}` : "Set A (Start)"}
+                            >A</button>
+                            <button
+                                className={`ab-btn ${loopB !== null ? 'set' : ''}`}
+                                onClick={handleSetLoopB}
+                                disabled={loopA === null}
+                                title={loopB !== null ? `B: ${formatTime(loopB)}` : "Set B (End)"}
+                            >B</button>
+                            {(loopA !== null || loopB !== null) && (
+                                <button className="ab-clear-btn" onClick={clearLoop} title="Clear Loop">
+                                    <CloseIcon size={12} />
+                                </button>
+                            )}
+                        </div>
+                    </div>
 
-                        {/* Toggle Shuffle */}
+                    <div className="controls-center">
                         <button
                             className="control-btn"
                             onClick={() => {
@@ -1548,7 +2479,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                         >
                             <ShuffleIcon size={18} />
                         </button>
-
                         <button className="control-btn" onClick={handlePrevious} title="Previous">
                             <SkipBackIcon size={20} fill="currentColor" />
                         </button>
@@ -1558,8 +2488,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                         <button className="control-btn" onClick={handleNext} title="Next">
                             <SkipForwardIcon size={20} fill="currentColor" />
                         </button>
-
-                        {/* Toggle Repeat */}
                         <button
                             className="control-btn"
                             onClick={() => {
@@ -1571,18 +2499,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                             style={{ color: repeatMode !== 'off' ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
                         >
                             {repeatMode === 'one' ? <Repeat1Icon size={18} /> : <RepeatIcon size={18} />}
-                        </button>
-                        {/* Playlist Button */}
-                        <button
-                            className={`control-btn ${showPlaylistBrowser ? 'active-fx-btn' : ''}`}
-                            onClick={() => {
-                                if (showPlaylistBrowser) closePlaylistBrowser()
-                                else setShowPlaylistBrowser(true)
-                            }}
-                            title="Playlists"
-                            style={{ color: showPlaylistBrowser ? 'var(--accent-primary)' : 'var(--text-secondary)' }}
-                        >
-                            <PlaylistIcon size={18} />
                         </button>
                     </div>
 
@@ -1734,6 +2650,28 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                             onClick={(e) => {
                                 e.stopPropagation()
                                 const track = tracks.find(t => t.path === trackMenuOpen)
+                                if (track) playNext(track)
+                            }}
+                        >
+                            <SkipForwardIcon size={14} />
+                            <span>Play Next</span>
+                        </div>
+                        <div
+                            className="menu-item"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                const track = tracks.find(t => t.path === trackMenuOpen)
+                                if (track) addToQueue(track)
+                            }}
+                        >
+                            <QueueIcon size={14} />
+                            <span>Add to Queue</span>
+                        </div>
+                        <div
+                            className="menu-item"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                const track = tracks.find(t => t.path === trackMenuOpen)
                                 if (track) {
                                     setTrackToAddToPlaylist(track)
                                     setShowPlaylistBrowser(true)
@@ -1743,6 +2681,17 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                         >
                             <PlusIcon size={14} />
                             <span>Add to Playlist...</span>
+                        </div>
+                        <div
+                            className="menu-item"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                const track = tracks.find(t => t.path === trackMenuOpen)
+                                if (track) openMetadataEdit(track)
+                            }}
+                        >
+                            <EditIcon size={14} />
+                            <span>Edit Metadata</span>
                         </div>
                         {activePlaylist && (
                             <div
@@ -1852,6 +2801,88 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks }
                     document.body
                 )
             }
+            {/* Queue View Overlay */}
+            {showQueueView && playbackQueue.length > 0 && createPortal(
+                <div className="queue-overlay" onClick={() => setShowQueueView(false)}>
+                    <div className="queue-panel" onClick={e => e.stopPropagation()}>
+                        <div className="queue-header">
+                            <h3>Up Next ({playbackQueue.length})</h3>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <button className="queue-clear-btn" onClick={() => { setPlaybackQueue([]); setShowQueueView(false) }}>
+                                    Clear
+                                </button>
+                                <button className="close-btn" onClick={() => setShowQueueView(false)}>
+                                    <CloseIcon size={18} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="queue-list">
+                            {playbackQueue.map((track, i) => (
+                                <div key={`${track.path}-${i}`} className="queue-item">
+                                    <span className="queue-item-index">{i + 1}</span>
+                                    <div className="queue-item-info">
+                                        <span className="queue-item-title">{track.title}</span>
+                                        <span className="queue-item-artist">{track.artist}</span>
+                                    </div>
+                                    <button
+                                        className="queue-remove-btn"
+                                        onClick={() => setPlaybackQueue(q => q.filter((_, idx) => idx !== i))}
+                                    >
+                                        <CloseIcon size={14} />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {/* Metadata Edit Modal */}
+            {editingTrackMeta && createPortal(
+                <div className="playlist-modal-overlay" onClick={() => setEditingTrackMeta(null)}>
+                    <div className="playlist-modal" onClick={e => e.stopPropagation()}>
+                        <h3>Edit Metadata</h3>
+                        <form onSubmit={(e) => { e.preventDefault(); saveMetadataEdit() }}>
+                            <div className="playlist-modal-content" style={{ flexDirection: 'column', width: '100%', gap: '12px' }}>
+                                <div className="form-group" style={{ width: '100%' }}>
+                                    <label>Title</label>
+                                    <input
+                                        type="text"
+                                        value={metaEditValues.title}
+                                        onChange={e => setMetaEditValues(v => ({ ...v, title: e.target.value }))}
+                                        style={{ fontSize: '0.95rem', padding: '10px 12px', width: '100%' }}
+                                        autoFocus
+                                    />
+                                </div>
+                                <div className="form-group" style={{ width: '100%' }}>
+                                    <label>Artist</label>
+                                    <input
+                                        type="text"
+                                        value={metaEditValues.artist}
+                                        onChange={e => setMetaEditValues(v => ({ ...v, artist: e.target.value }))}
+                                        style={{ fontSize: '0.95rem', padding: '10px 12px', width: '100%' }}
+                                    />
+                                </div>
+                                <div className="form-group" style={{ width: '100%' }}>
+                                    <label>Album</label>
+                                    <input
+                                        type="text"
+                                        value={metaEditValues.album}
+                                        onChange={e => setMetaEditValues(v => ({ ...v, album: e.target.value }))}
+                                        style={{ fontSize: '0.95rem', padding: '10px 12px', width: '100%' }}
+                                    />
+                                </div>
+                            </div>
+                            <div className="modal-actions">
+                                <button type="button" className="cancel-btn" onClick={() => setEditingTrackMeta(null)}>Cancel</button>
+                                <button type="submit" className="create-btn">Save</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>,
+                document.body
+            )}
         </div >
     )
 }

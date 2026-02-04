@@ -1,10 +1,18 @@
 
-import { app, BrowserWindow, ipcMain, dialog, shell, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, net, Notification } from 'electron'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir, platform } from 'os'
 import { createHash } from 'crypto'
+import { autoUpdater } from 'electron-updater'
+import log from 'electron-log'
+
+// Configure logging
+log.transports.file.level = 'info'
+autoUpdater.logger = log
+autoUpdater.autoDownload = false
+
 
 // Register scheme as privileged
 const { protocol } = require('electron')
@@ -429,7 +437,8 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             webSecurity: true,
-            allowRunningInsecureContent: false
+            allowRunningInsecureContent: false,
+            autoplayPolicy: 'no-user-gesture-required'
         }
     })
 
@@ -505,7 +514,7 @@ app.on('window-all-closed', () => {
 app.whenReady().then(() => {
     const { protocol } = require('electron')
 
-    protocol.handle('media', async (request: { url: string }) => {
+    protocol.handle('media', async (request: Request) => {
         // Use URL parsing to correctly extract the path
         // media:///Users/path = URL with empty host and path /Users/path
         // media://C:/path = URL with host "C" and path /path (Windows quirk)
@@ -513,37 +522,24 @@ app.whenReady().then(() => {
 
         try {
             const url = new URL(request.url)
-            // For file-like URLs, the pathname is what we need
-            // But we also need to check hostname for Windows drive letters
             if (url.hostname && /^[a-zA-Z]$/.test(url.hostname)) {
-                // Windows path: hostname is drive letter, pathname is the rest
                 filePath = `${url.hostname.toUpperCase()}:${url.pathname}`
             } else if (url.hostname) {
-                // Host was incorrectly parsed as first path component
                 filePath = `/${url.hostname}${url.pathname}`
             } else {
-                // Normal case: just use pathname
                 filePath = url.pathname
             }
         } catch (e) {
-            // Fallback: manual parsing
             filePath = request.url.replace(/^media:\/\//, '')
-            if (filePath.startsWith('/')) {
-                // Already correct
-            }
         }
 
         filePath = decodeURIComponent(filePath)
 
-        // Windows path fix: Convert forward slashes to backslashes for Windows paths
         if (platform() === 'win32') {
             if (/^[a-zA-Z]:/.test(filePath)) {
                 filePath = filePath.replace(/\//g, '\\')
             }
         }
-
-        console.log('[Media Protocol] Request URL:', request.url)
-        console.log('[Media Protocol] Resolved path:', filePath)
 
         try {
             if (!existsSync(filePath)) {
@@ -551,7 +547,6 @@ app.whenReady().then(() => {
                 return new Response('File not found', { status: 404 })
             }
 
-            // Determine MIME type based on extension
             const ext = filePath.toLowerCase().slice(filePath.lastIndexOf('.'))
             const mimeTypes: Record<string, string> = {
                 '.mp3': 'audio/mpeg',
@@ -564,19 +559,42 @@ app.whenReady().then(() => {
             }
             const mimeType = mimeTypes[ext] || 'audio/mpeg'
 
-            // Read file and return as Response with CORS headers
             const fileBuffer = readFileSync(filePath)
-            console.log('[Media Protocol] Serving file:', filePath, 'Size:', fileBuffer.length, 'Type:', mimeType)
+            const fileSize = fileBuffer.length
+
+            const corsHeaders = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+                'Accept-Ranges': 'bytes'
+            }
+
+            // Handle Range requests (critical for pause/resume after buffer eviction)
+            const rangeHeader = request.headers.get('range')
+            if (rangeHeader) {
+                const match = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+                if (match) {
+                    const start = parseInt(match[1])
+                    const end = match[2] ? parseInt(match[2]) : fileSize - 1
+                    const chunk = fileBuffer.slice(start, end + 1)
+                    return new Response(chunk, {
+                        status: 206,
+                        headers: {
+                            ...corsHeaders,
+                            'Content-Type': mimeType,
+                            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                            'Content-Length': chunk.length.toString(),
+                        }
+                    })
+                }
+            }
 
             return new Response(fileBuffer, {
                 status: 200,
                 headers: {
+                    ...corsHeaders,
                     'Content-Type': mimeType,
-                    'Content-Length': fileBuffer.length.toString(),
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-                    'Access-Control-Allow-Headers': '*',
-                    'Accept-Ranges': 'bytes'
+                    'Content-Length': fileSize.toString(),
                 }
             })
         } catch (error) {
@@ -957,7 +975,13 @@ ipcMain.handle('download-audio', async (_event, options: {
             }
 
             if (code !== 0) {
-                reject(new Error(`yt-dlp failed: ${code}`))
+                // Extract meaningful error from stderr
+                const errLines = stderrOutput.split('\n').filter(l => l.includes('ERROR') || l.includes('error'))
+                const errMsg = errLines.length > 0
+                    ? errLines[errLines.length - 1].replace(/^.*ERROR:\s*/i, '').trim()
+                    : `yt-dlp exit code ${code}`
+                console.error('[Main] yt-dlp stderr:', stderrOutput)
+                reject(new Error(errMsg))
                 return
             }
 
@@ -2025,4 +2049,249 @@ ipcMain.handle('convert-m4a-to-mp3', async (_event, options: {
             reject(new Error(`Failed to start ffmpeg: ${err.message}`))
         })
     })
+})
+
+// ===== Mini Player =====
+let miniPlayerWindow: BrowserWindow | null = null
+
+ipcMain.handle('open-mini-player', async (_event, screenPos?: { x: number; y: number }) => {
+    if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) {
+        miniPlayerWindow.focus()
+        return
+    }
+
+    const miniSize = 180
+
+    // Position mini player at click location (centered on cursor)
+    let x: number | undefined
+    let y: number | undefined
+    if (screenPos) {
+        x = Math.round(screenPos.x - miniSize / 2)
+        y = Math.round(screenPos.y - miniSize / 2)
+    }
+
+    miniPlayerWindow = new BrowserWindow({
+        width: miniSize,
+        height: miniSize,
+        x,
+        y,
+        alwaysOnTop: true,
+        frame: false,
+        resizable: false,
+        skipTaskbar: true,
+        transparent: true,
+        backgroundColor: '#00000000',
+        webPreferences: {
+            preload: join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true
+        }
+    })
+
+    if (process.env.VITE_DEV_SERVER_URL) {
+        miniPlayerWindow.loadURL(process.env.VITE_DEV_SERVER_URL + '#/mini-player')
+    } else {
+        miniPlayerWindow.loadFile(join(__dirname, '../dist/index.html'), { hash: '/mini-player' })
+    }
+
+    miniPlayerWindow.on('closed', () => {
+        miniPlayerWindow = null
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show()
+        }
+    })
+
+    // Hide main window after mini player is ready
+    miniPlayerWindow.once('ready-to-show', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.hide()
+        }
+    })
+})
+
+ipcMain.handle('close-mini-player', () => {
+    if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) {
+        // Position main window centered on mini player's location
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            const miniBounds = miniPlayerWindow.getBounds()
+            const mainBounds = mainWindow.getBounds()
+            const miniCenterX = miniBounds.x + miniBounds.width / 2
+            const miniCenterY = miniBounds.y + miniBounds.height / 2
+            mainWindow.setPosition(
+                Math.round(miniCenterX - mainBounds.width / 2),
+                Math.round(miniCenterY - mainBounds.height / 2)
+            )
+        }
+        miniPlayerWindow.close()
+    }
+})
+
+ipcMain.handle('sync-playback-state', (_event, state: any) => {
+    if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) {
+        miniPlayerWindow.webContents.send('playback-state-sync', state)
+    }
+})
+
+ipcMain.handle('mini-player-command', (_event, command: string) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('mini-player-command', command)
+    }
+})
+
+// ===== Metadata Editing =====
+ipcMain.handle('edit-track-metadata', async (_event, options: {
+    filePath: string,
+    metadata: { title: string, artist: string, album: string },
+    coverArt?: string
+}) => {
+    const ffmpegBin = getBinaryPath(platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+    const ffmpegCmd = existsSync(ffmpegBin) ? ffmpegBin : 'ffmpeg'
+
+    const ext = options.filePath.split('.').pop() || 'mp3'
+    const tempOutput = options.filePath.replace(`.${ext}`, `_edited.${ext}`)
+
+    const args: string[] = ['-i', options.filePath]
+
+    // If cover art provided, add as input
+    let coverArtTempPath: string | null = null
+    if (options.coverArt && options.coverArt.startsWith('data:image')) {
+        const base64Data = options.coverArt.split(';base64,').pop()
+        if (base64Data) {
+            coverArtTempPath = options.filePath.replace(`.${ext}`, '_cover.jpg')
+            writeFileSync(coverArtTempPath, base64Data, { encoding: 'base64' })
+            args.push('-i', coverArtTempPath)
+        }
+    }
+
+    // Copy audio without re-encoding
+    args.push('-c:a', 'copy')
+
+    // Map streams
+    if (coverArtTempPath) {
+        args.push('-map', '0:a', '-map', '1:v')
+        if (ext === 'mp3') {
+            args.push('-id3v2_version', '3')
+        }
+        args.push('-disposition:v:0', 'attached_pic')
+    }
+
+    // Metadata tags
+    args.push(
+        '-metadata', `title=${options.metadata.title}`,
+        '-metadata', `artist=${options.metadata.artist}`,
+        '-metadata', `album=${options.metadata.album}`,
+        '-y', tempOutput
+    )
+
+    return new Promise((resolve) => {
+        const proc = spawn(ffmpegCmd, args)
+        proc.on('close', (code) => {
+            if (code === 0) {
+                try {
+                    unlinkSync(options.filePath)
+                    const { renameSync } = require('fs')
+                    renameSync(tempOutput, options.filePath)
+
+                    // Invalidate cache
+                    const cacheDir = join(app.getPath('userData'), 'music-cache.json')
+                    if (existsSync(cacheDir)) {
+                        try {
+                            const cache = JSON.parse(readFileSync(cacheDir, 'utf-8'))
+                            delete cache[options.filePath]
+                            writeFileSync(cacheDir, JSON.stringify(cache))
+                        } catch { }
+                    }
+
+                    resolve({ success: true })
+                } catch (e) {
+                    resolve({ success: false })
+                }
+            } else {
+                try { if (existsSync(tempOutput)) unlinkSync(tempOutput) } catch { }
+                resolve({ success: false })
+            }
+            if (coverArtTempPath) {
+                try { if (existsSync(coverArtTempPath)) unlinkSync(coverArtTempPath) } catch { }
+            }
+        })
+        proc.on('error', () => {
+            resolve({ success: false })
+        })
+    })
+})
+
+// ===== Native Notifications =====
+ipcMain.handle('show-notification', async (_event, options: { title: string, body: string }) => {
+    if (Notification.isSupported()) {
+        const notification = new Notification({
+            title: options.title,
+            body: options.body,
+            silent: false
+        })
+        notification.show()
+        notification.on('click', () => {
+            mainWindow?.show()
+            mainWindow?.focus()
+        })
+    }
+})
+
+// ===== Auto-Updater Logic =====
+
+ipcMain.handle('check-for-updates', async () => {
+    if (!app.isPackaged) {
+        console.log('[AutoUpdater] Skipping check in dev mode')
+        return { updateAvailable: false }
+    }
+
+    try {
+        console.log('[AutoUpdater] Checking for updates...')
+        const result = await autoUpdater.checkForUpdates()
+        return {
+            updateAvailable: !!result && result.updateInfo.version !== app.getVersion(),
+            version: result?.updateInfo.version,
+            releaseNotes: result?.updateInfo.releaseNotes
+        }
+    } catch (error) {
+        console.error('[AutoUpdater] Check failed:', error)
+        return { updateAvailable: false, error: String(error) }
+    }
+})
+
+ipcMain.handle('download-update', async () => {
+    try {
+        await autoUpdater.downloadUpdate()
+        return { success: true }
+    } catch (error) {
+        return { success: false, error: String(error) }
+    }
+})
+
+ipcMain.handle('install-update', () => {
+    autoUpdater.quitAndInstall()
+})
+
+// Forward auto-updater events to renderer
+autoUpdater.on('update-available', (info) => {
+    console.log('[AutoUpdater] Update available:', info)
+    mainWindow?.webContents.send('update-available', info)
+})
+
+autoUpdater.on('update-not-available', () => {
+    console.log('[AutoUpdater] Update not available')
+    mainWindow?.webContents.send('update-not-available')
+})
+
+autoUpdater.on('error', (err) => {
+    console.error('[AutoUpdater] Error:', err)
+    mainWindow?.webContents.send('update-error', err.toString())
+})
+
+autoUpdater.on('download-progress', (progressObj) => {
+    mainWindow?.webContents.send('auto-updater-progress', progressObj)
+})
+
+autoUpdater.on('update-downloaded', (info) => {
+    console.log('[AutoUpdater] Update downloaded:', info)
+    mainWindow?.webContents.send('update-downloaded', info)
 })
