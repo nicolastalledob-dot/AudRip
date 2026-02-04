@@ -2246,15 +2246,30 @@ ipcMain.handle('check-for-updates', async () => {
 
     try {
         console.log('[AutoUpdater] Checking for updates...')
+        // Force manual download
+        autoUpdater.autoDownload = false
         const result = await autoUpdater.checkForUpdates()
+
+        // If result is null, it means no update or error caught internally
+        if (!result) {
+            return { updateAvailable: false }
+        }
+
         return {
-            updateAvailable: !!result && result.updateInfo.version !== app.getVersion(),
-            version: result?.updateInfo.version,
-            releaseNotes: result?.updateInfo.releaseNotes
+            updateAvailable: result.updateInfo.version !== app.getVersion(),
+            version: result.updateInfo.version,
+            releaseNotes: Array.isArray(result.updateInfo.releaseNotes)
+                ? result.updateInfo.releaseNotes.map(n => typeof n === 'string' ? n : n.note).join('\n')
+                : (result.updateInfo.releaseNotes || '')
         }
     } catch (error) {
         console.error('[AutoUpdater] Check failed:', error)
-        return { updateAvailable: false, error: String(error) }
+        const errStr = String(error)
+        // Suppress common "no update found" errors to avoid alerting user unnecessarily
+        if (errStr.includes('Unable to find latest version') || errStr.includes('404') || errStr.includes('406')) {
+            return { updateAvailable: false }
+        }
+        return { updateAvailable: false, error: errStr }
     }
 })
 

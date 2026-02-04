@@ -212,15 +212,27 @@ function UpdateChecker() {
         try {
             const result = await window.electronAPI.checkForUpdates()
             if (result.error) {
-                setStatus('error')
-                setError(result.error)
+                // If it's a GitHub API error about missing releases, just say up to date
+                if (result.error.includes('Unable to find latest version') || result.error.includes('HttpError: 404')) {
+                    setStatus('uptodate')
+                    setTimeout(() => setStatus('idle'), 3000)
+                } else {
+                    setStatus('error')
+                    setError(result.error)
+                }
             } else if (!result.updateAvailable) {
                 setStatus('uptodate')
                 setTimeout(() => setStatus('idle'), 3000)
             }
         } catch (e) {
-            setStatus('error')
-            setError(String(e))
+            const errStr = String(e)
+            if (errStr.includes('Unable to find latest version') || errStr.includes('404')) {
+                setStatus('uptodate')
+                setTimeout(() => setStatus('idle'), 3000)
+            } else {
+                setStatus('error')
+                setError(errStr)
+            }
         }
     }
 
