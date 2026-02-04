@@ -245,40 +245,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showNotification: (options: { title: string, body: string }): Promise<void> =>
         ipcRenderer.invoke('show-notification', options),
 
-    // Auto Updater API
-    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
-    downloadUpdate: () => ipcRenderer.invoke('download-update'),
-    installUpdate: () => ipcRenderer.invoke('install-update'),
 
-    onUpdateAvailable: (callback: (info: any) => void) => {
-        const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
-        ipcRenderer.on('update-available', handler)
-        return () => ipcRenderer.removeListener('update-available', handler)
-    },
-
-    onUpdateNotAvailable: (callback: () => void) => {
-        const handler = () => callback()
-        ipcRenderer.on('update-not-available', handler)
-        return () => ipcRenderer.removeListener('update-not-available', handler)
-    },
-
-    onUpdateError: (callback: (error: string) => void) => {
-        const handler = (_event: Electron.IpcRendererEvent, error: string) => callback(error)
-        ipcRenderer.on('update-error', handler)
-        return () => ipcRenderer.removeListener('update-error', handler)
-    },
-
-    onUpdateProgress: (callback: (progress: any) => void) => {
-        const handler = (_event: Electron.IpcRendererEvent, progress: any) => callback(progress)
-        ipcRenderer.on('auto-updater-progress', handler)
-        return () => ipcRenderer.removeListener('auto-updater-progress', handler)
-    },
-
-    onUpdateDownloaded: (callback: (info: any) => void) => {
-        const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
-        ipcRenderer.on('update-downloaded', handler)
-        return () => ipcRenderer.removeListener('update-downloaded', handler)
-    },
 
     openExternal: (url: string): Promise<void> =>
         ipcRenderer.invoke('open-external', url)
@@ -349,15 +316,7 @@ declare global {
                 metadata: { title: string; artist: string; album: string }
                 coverArt?: string
             }) => Promise<{ success: boolean }>
-            // Auto-updater
-            checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, releaseNotes?: string | null, error?: string }>
-            downloadUpdate: () => Promise<{ success: boolean, error?: string }>
-            installUpdate: () => Promise<void>
-            onUpdateAvailable: (callback: (info: any) => void) => () => void
-            onUpdateNotAvailable: (callback: () => void) => () => void
-            onUpdateError: (callback: (error: string) => void) => () => void
-            onUpdateProgress: (callback: (progress: any) => void) => () => void
-            onUpdateDownloaded: (callback: (info: any) => void) => () => void
+
             // FX Presets
             getFxPresets: () => Promise<any[]>
             saveFxPreset: (preset: any) => Promise<{ success: boolean, presets: any[] }>

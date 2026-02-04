@@ -132,15 +132,8 @@ interface Window {
             metadata: { title: string; artist: string; album: string }
             coverArt?: string
         }) => Promise<{ success: boolean }>
-        // Auto-updater
-        checkForUpdates: () => Promise<{ updateAvailable: boolean, version?: string, currentVersion?: string, releaseNotes?: string | null, downloadUrl?: string, error?: string }>
-        downloadUpdate: () => Promise<{ success: boolean, error?: string }>
-        installUpdate: () => Promise<void>
+
         openExternal: (url: string) => Promise<void>
-        onUpdateAvailable: (callback: (info: any) => void) => () => void
-        onUpdateNotAvailable: (callback: () => void) => () => void
-        onUpdateError: (callback: (error: string) => void) => () => void
-        onUpdateProgress: (callback: (progress: any) => void) => () => void
-        onUpdateDownloaded: (callback: (info: any) => void) => () => void
+
     }
 }

@@ -5,13 +5,7 @@ import { spawn } from 'child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir, platform } from 'os'
 import { createHash } from 'crypto'
-import { autoUpdater } from 'electron-updater'
-import log from 'electron-log'
 
-// Configure logging
-log.transports.file.level = 'info'
-autoUpdater.logger = log
-autoUpdater.autoDownload = false
 
 
 // Register scheme as privileged
@@ -2250,87 +2244,3 @@ ipcMain.handle('show-notification', async (_event, options: { title: string, bod
     }
 })
 
-// ===== Auto-Updater Logic =====
-
-ipcMain.handle('check-for-updates', async () => {
-    if (!app.isPackaged) {
-        console.log('[AutoUpdater] Skipping check in dev mode')
-        return { updateAvailable: false }
-    }
-
-    try {
-        console.log('[AutoUpdater] Checking for updates...')
-        // Force manual download
-        autoUpdater.autoDownload = false
-        const result = await autoUpdater.checkForUpdates()
-
-        const currentVersion = app.getVersion()
-
-        // If result is null, it means no update or error caught internally
-        if (!result) {
-            return { updateAvailable: false, currentVersion }
-        }
-
-        return {
-            updateAvailable: result.updateInfo.version !== currentVersion,
-            version: result.updateInfo.version,
-            currentVersion: currentVersion,
-            releaseNotes: Array.isArray(result.updateInfo.releaseNotes)
-                ? result.updateInfo.releaseNotes.map(n => typeof n === 'string' ? n : n.note).join('\n')
-                : (result.updateInfo.releaseNotes || ''),
-            downloadUrl: `https://github.com/nicolastalledob-dot/AudRip/releases/tag/v${result.updateInfo.version}`
-        }
-    } catch (error) {
-        console.error('[AutoUpdater] Check failed:', error)
-        const errStr = String(error)
-        const currentVersion = app.getVersion()
-        // Suppress common "no update found" errors to avoid alerting user unnecessarily
-        if (errStr.includes('Unable to find latest version') || errStr.includes('404') || errStr.includes('406') || errStr.includes('Cannot parse releases feed')) {
-            return { updateAvailable: false, currentVersion }
-        }
-        return { updateAvailable: false, error: errStr, currentVersion }
-    }
-})
-
-// Open external URL
-ipcMain.handle('open-external', async (_event, url) => {
-    await shell.openExternal(url)
-})
-
-ipcMain.handle('download-update', async () => {
-    try {
-        await autoUpdater.downloadUpdate()
-        return { success: true }
-    } catch (error) {
-        return { success: false, error: String(error) }
-    }
-})
-
-ipcMain.handle('install-update', () => {
-    autoUpdater.quitAndInstall()
-})
-
-// Forward auto-updater events to renderer
-autoUpdater.on('update-available', (info) => {
-    console.log('[AutoUpdater] Update available:', info)
-    mainWindow?.webContents.send('update-available', info)
-})
-
-autoUpdater.on('update-not-available', () => {
-    console.log('[AutoUpdater] Update not available')
-    mainWindow?.webContents.send('update-not-available')
-})
-
-autoUpdater.on('error', (err) => {
-    console.error('[AutoUpdater] Error:', err)
-    mainWindow?.webContents.send('update-error', err.toString())
-})
-
-autoUpdater.on('download-progress', (progressObj) => {
-    mainWindow?.webContents.send('auto-updater-progress', progressObj)
-})
-
-autoUpdater.on('update-downloaded', (info) => {
-    console.log('[AutoUpdater] Update downloaded:', info)
-    mainWindow?.webContents.send('update-downloaded', info)
-})
