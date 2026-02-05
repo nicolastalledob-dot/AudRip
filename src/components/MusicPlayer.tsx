@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 
 // ... existing imports ...
@@ -6,6 +6,8 @@ import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipFor
 import { Track } from '../types'
 import { THEME_PRESETS, ThemeKey } from './SettingsModal'
 import CoverArtCube3D from './CoverArtCube3D'
+const VinylDisc3D = lazy(() => import('./VinylDisc3D'))
+const CD3D = lazy(() => import('./CD3D'))
 
 interface Playlist {
     id: string
@@ -22,10 +24,10 @@ interface MusicPlayerProps {
     initialTracks?: Track[]
     onRefreshTracks?: () => Promise<Track[]>
     crossfadeDuration?: number
-    audioNormalization?: boolean
     theme?: string
     accentColor?: string
     adaptiveColors?: boolean
+    playerModel?: 'cube' | 'vinyl' | 'cd'
 }
 
 interface ArtAnalysis {
@@ -161,6 +163,13 @@ const EQ_BANDS = [
     { freq: 12000, label: '12k', type: 'highshelf' as const },
 ]
 
+function formatTime(time: number) {
+    if (!time || isNaN(time)) return '0:00'
+    const minutes = Math.floor(time / 60)
+    const seconds = Math.floor(time % 60)
+    return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
+}
+
 const MarqueeText = ({ text }: { text: string }) => {
     const containerRef = useRef<HTMLDivElement>(null)
     const textRef = useRef<HTMLDivElement>(null)
@@ -193,7 +202,7 @@ const MarqueeText = ({ text }: { text: string }) => {
     )
 }
 
-export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, crossfadeDuration = 0, audioNormalization = false, theme = 'dark', accentColor = '#00ff88', adaptiveColors = false }: MusicPlayerProps) {
+export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, crossfadeDuration = 0, theme = 'dark', accentColor = '#00ff88', adaptiveColors = false, playerModel = 'cube' }: MusicPlayerProps) {
     const [tracks, setTracks] = useState<Track[]>(initialTracks || [])
     const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1)
     const [isPlaying, setIsPlaying] = useState(false)
@@ -256,6 +265,14 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     const [displayedArt, setDisplayedArt] = useState<string | null>(null)
     const [artColor, setArtColor] = useState<string | null>(null)
 
+    // --- VIRTUALIZATION ---
+    const ITEM_HEIGHT = 44 // Height of each track item in pixels (compact: 36)
+    const ITEM_HEIGHT_COMPACT = 36
+    const OVERSCAN = 5 // Extra items to render above/below viewport
+    const tracklistRef = useRef<HTMLDivElement>(null)
+    const [scrollTop, setScrollTop] = useState(0)
+    const [containerHeight, setContainerHeight] = useState(400)
+
     const fetchCoverArt = useCallback(async (filePath: string) => {
         if (coverArtLoadingRef.current.has(filePath)) return
         coverArtLoadingRef.current.add(filePath)
@@ -280,19 +297,9 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     const [bassLevel, setBassLevel] = useState(0)       // -10 to 15
     const [reverbLevel, setReverbLevel] = useState(0)   // 0 to 3
     const [pitchLevel, setPitchLevel] = useState(1)     // 0.25 to 3
-    const [saturationLevel, setSaturationLevel] = useState(0) // 0 to 1
-    const [highPassLevel, setHighPassLevel] = useState(0) // 0 to 1 (Freq)
     const [delayLevel, setDelayLevel] = useState(0)     // 0 to 1 (Mix)
     const [stereoWidthLevel, setStereoWidthLevel] = useState(0) // 0 to 1 (Haas Mix)
-    // Phase 1 New Effects
-    const [lowPassLevel, setLowPassLevel] = useState(1)    // 0 to 1 (1 = open, 0 = muffled)
     const [panningLevel, setPanningLevel] = useState(0)    // -1 to 1 (L to R)
-    const [compressorLevel, setCompressorLevel] = useState(0) // 0 to 1 (amount)
-    // Phase 2 New Effects
-    const [flangerLevel, setFlangerLevel] = useState(0)   // 0 to 1 (intensity)
-    const [tremoloLevel, setTremoloLevel] = useState(0)   // 0 to 1 (depth)
-    // Phase 3 New Effects
-    const [audio8DLevel, setAudio8DLevel] = useState(0)   // 0 to 1 (rotation speed)
     // 8-band EQ
     const [eqBands, setEqBands] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0])
 
@@ -308,8 +315,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         bass: number
         reverb: number
         pitch: number
-        saturation: number
-        highPass: number
         delay: number
         stereoWidth: number
     }
@@ -331,8 +336,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         setBassLevel(preset.bass)
         setReverbLevel(preset.reverb)
         setPitchLevel(preset.pitch)
-        setSaturationLevel(preset.saturation)
-        setHighPassLevel(preset.highPass)
         setDelayLevel(preset.delay)
         setStereoWidthLevel(preset.stereoWidth)
         setActivePresetId(preset.id)
@@ -353,8 +356,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             bass: bassLevel,
             reverb: reverbLevel,
             pitch: pitchLevel,
-            saturation: saturationLevel,
-            highPass: highPassLevel,
             delay: delayLevel,
             stereoWidth: stereoWidthLevel
         }
@@ -397,7 +398,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     }
 
     // Get tracks for current view (all library or active playlist), sorted
-    const getDisplayTracks = useCallback(() => {
+    const displayTracks = useMemo(() => {
         let result = activePlaylist
             ? tracks.filter(t => activePlaylist.trackPaths.includes(t.path))
             : [...tracks]
@@ -437,19 +438,41 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             return initialTracks
         })
         setIsLoading(false)
-        if (currentTrackIndex === -1 && initialTracks.length > 0) {
-            setCurrentTrackIndex(0)
-        }
+        // Don't auto-select first track - let user choose to avoid loading audio on startup
     }, [initialTracks])
 
-    const filteredTracks = getDisplayTracks().filter(track =>
-        track.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        track.artist.toLowerCase().includes(searchTerm.toLowerCase())
-    )
+    const filteredTracks = useMemo(() =>
+        displayTracks.filter(track =>
+            track.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            track.artist.toLowerCase().includes(searchTerm.toLowerCase())
+        ), [displayTracks, searchTerm])
+
+    // Virtualization: calculate visible items
+    const virtualizedData = useMemo(() => {
+        const itemHeight = isCompact ? ITEM_HEIGHT_COMPACT : ITEM_HEIGHT
+        const totalHeight = filteredTracks.length * itemHeight
+        const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - OVERSCAN)
+        const visibleCount = Math.ceil(containerHeight / itemHeight) + OVERSCAN * 2
+        const endIndex = Math.min(filteredTracks.length, startIndex + visibleCount)
+        const visibleTracks = filteredTracks.slice(startIndex, endIndex).map((track, i) => ({
+            track,
+            index: startIndex + i,
+            style: {
+                position: 'absolute' as const,
+                top: (startIndex + i) * itemHeight,
+                left: 0,
+                right: 0,
+                height: itemHeight
+            }
+        }))
+        return { totalHeight, visibleTracks, startIndex }
+    }, [filteredTracks, scrollTop, containerHeight, isCompact])
 
     const audioRef = useRef<HTMLAudioElement | null>(null)
     const currentAudioPathRef = useRef<string | null>(null)
     const shouldAutoPlayRef = useRef<boolean>(false) // Track if we should auto-play next track
+    const currentTimeRef = useRef(0) // Internal currentTime updated on every timeupdate
+    const lastTimeUpdateRef = useRef(0) // Timestamp of last setCurrentTime call
 
     // Phase 4 Refs for Loop
     const loopARef = useRef<number | null>(null)
@@ -461,9 +484,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null)
 
     // Nodes
-    const highPassNodeRef = useRef<BiquadFilterNode | null>(null)
     const bassNodeRef = useRef<BiquadFilterNode | null>(null)
-    const saturationNodeRef = useRef<WaveShaperNode | null>(null)
     const reverbNodeRef = useRef<ConvolverNode | null>(null)
     const delayNodeRef = useRef<DelayNode | null>(null)
     const delayGainNodeRef = useRef<GainNode | null>(null)
@@ -472,28 +493,9 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     const dryGainNodeRef = useRef<GainNode | null>(null)
     const wetGainNodeRef = useRef<GainNode | null>(null) // Reverb
     const stereoWidthGainNodeRef = useRef<GainNode | null>(null) // Haas
-    // Phase 1 New Nodes
-    const lowPassNodeRef = useRef<BiquadFilterNode | null>(null)
     const pannerNodeRef = useRef<StereoPannerNode | null>(null)
-    const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null)
-    // Phase 2 New Nodes (modulation effects need gain nodes for wet mix)
-    const flangerGainRef = useRef<GainNode | null>(null)
-    const flangerDelayRef = useRef<DelayNode | null>(null)
-    const flangerLfoRef = useRef<OscillatorNode | null>(null)
-    const tremoloGainRef = useRef<GainNode | null>(null)
-    const tremoloLfoRef = useRef<OscillatorNode | null>(null)
-    const tremoloDepthRef = useRef<GainNode | null>(null)
-    // Phase 3 New Nodes
-    const audio8DPannerRef = useRef<StereoPannerNode | null>(null)
-    const audio8DLfoRef = useRef<OscillatorNode | null>(null)
-    const audio8DGainRef = useRef<GainNode | null>(null)
     // 8-band EQ
     const eqNodesRef = useRef<BiquadFilterNode[]>([])
-
-    // Normalization
-    const normGainNodeRef = useRef<GainNode | null>(null)
-    const normAnalyserRef = useRef<AnalyserNode | null>(null)
-    const normAnimFrameRef = useRef<number | null>(null)
 
     // Crossfade
     const crossfadeActiveRef = useRef(false)
@@ -529,13 +531,19 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         // Otherwise: still loading — keep previous displayedArt
     }, [currentTrack?.path, coverArtCache, getTrackCoverArt])
 
-    // Adaptive colors — extract vibrant color and matching theme from album art
+    // Analyze album art once — sets both adaptive CSS vars and artColor for 3D model
     useEffect(() => {
-        if (!adaptiveColors || !displayedArt) return
+        if (!displayedArt) { setArtColor(null); return }
 
         let cancelled = false
         analyzeAlbumArt(displayedArt).then(result => {
-            if (cancelled || !result) return
+            if (cancelled) return
+
+            // Always set artColor (used by 3D cube/vinyl/CD)
+            setArtColor(result?.color || null)
+
+            // Apply adaptive theme colors if enabled
+            if (!adaptiveColors || !result) return
 
             const hexToRgb = (hex: string) => ({
                 r: parseInt(hex.slice(1, 3), 16),
@@ -588,17 +596,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         return () => { cancelled = true }
     }, [displayedArt, adaptiveColors])
 
-    // Extract dominant color from album art for 3D cube
-    useEffect(() => {
-        if (!displayedArt) { setArtColor(null); return }
-        let cancelled = false
-        analyzeAlbumArt(displayedArt).then(result => {
-            if (cancelled) return
-            setArtColor(result?.color || null)
-        })
-        return () => { cancelled = true }
-    }, [displayedArt])
-
     // Fetch cover art for active playlist's first 4 tracks (for auto-cover grid)
     useEffect(() => {
         if (!activePlaylist) return
@@ -627,23 +624,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         return impulse
     }
 
-    // Helper: Saturation Curve
-    const makeSaturationCurve = (amount: number) => {
-        const k = amount * 100
-        const n_samples = 44100
-        const curve = new Float32Array(n_samples)
-        const deg = Math.PI / 180
-        if (amount === 0) {
-            for (let i = 0; i < n_samples; ++i) curve[i] = i * 2 / n_samples - 1
-            return curve
-        }
-        for (let i = 0; i < n_samples; ++i) {
-            const x = i * 2 / n_samples - 1
-            curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x))
-        }
-        return curve
-    }
-
     // Init Audio Context
     const initAudioContext = useCallback(() => {
         if (audioContextRef.current || !audioRef.current) return
@@ -657,43 +637,20 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         // --- Create Nodes ---
         const source = ctx.createMediaElementSource(audioRef.current)
 
-        // 1. High Pass (Radio Effect)
-        const highPass = ctx.createBiquadFilter()
-        highPass.type = 'highpass'
-        highPass.frequency.value = 0 // Start open (no cut)
-
-        // 2. Low Pass (Muffled Effect) - NEW
-        const lowPass = ctx.createBiquadFilter()
-        lowPass.type = 'lowpass'
-        lowPass.frequency.value = 20000 // Start fully open
-
-        // 3. Bass (Tone)
+        // Bass (Tone)
         const bassFilter = ctx.createBiquadFilter()
         bassFilter.type = 'lowshelf'
         bassFilter.frequency.value = 200
 
-        // 4. Saturation (Drive)
-        const saturationShaper = ctx.createWaveShaper()
-        saturationShaper.curve = makeSaturationCurve(0)
-        saturationShaper.oversample = '4x'
-
-        // 5. Compressor - NEW
-        const compressor = ctx.createDynamicsCompressor()
-        compressor.threshold.value = 0   // Will be adjusted by level
-        compressor.knee.value = 30
-        compressor.ratio.value = 1       // 1 = no compression
-        compressor.attack.value = 0.003
-        compressor.release.value = 0.25
-
-        // 6. Panner (L/R) - NEW
+        // Panner (L/R)
         const panner = ctx.createStereoPanner()
         panner.pan.value = 0 // Center
 
-        // 7. Reverb (Space)
+        // Reverb (Space)
         const reverbConvolver = ctx.createConvolver()
         reverbConvolver.buffer = createReverbImpulse(ctx)
 
-        // 8. Delay (Echo)
+        // Delay (Echo)
         const delay = ctx.createDelay(1.0)
         delay.delayTime.value = 0.35 // 350ms echo
         const delayFeedback = ctx.createGain()
@@ -701,7 +658,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         const delayWetGain = ctx.createGain()
         delayWetGain.gain.value = 0
 
-        // 9. Stereo Width (Haas Effect)
+        // Stereo Width (Haas Effect)
         const widthSplitter = ctx.createChannelSplitter(2)
         const widthDelay = ctx.createDelay()
         widthDelay.delayTime.value = 0.015 // 15ms Haas
@@ -716,20 +673,29 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         wetGain.gain.value = 0
 
         // --- Routing ---
-        // Chain: Source -> HighPass -> LowPass -> Bass -> Saturation -> Compressor -> Panner -> HUB
-        source.connect(highPass)
-        highPass.connect(lowPass)
-        lowPass.connect(bassFilter)
-        bassFilter.connect(saturationShaper)
-        saturationShaper.connect(panner)
-        // Compressor removed from chain to prevent clipping
-        // compressor.connect(panner)
+        // Chain: Source -> Bass -> Panner -> HUB
+        source.connect(bassFilter)
+        bassFilter.connect(panner)
 
         const hub = panner // The processed "dry signal" hub
 
-        // Path A: Dry Output
+        // Path A: Dry → dryGain → EQ → Destination
         hub.connect(dryGain)
-        dryGain.connect(ctx.destination)
+        // 8-band EQ chain (in series)
+        const eqFilters: BiquadFilterNode[] = EQ_BANDS.map((band) => {
+            const filter = ctx.createBiquadFilter()
+            filter.type = band.type
+            filter.frequency.value = band.freq
+            if (band.type === 'peaking') filter.Q.value = 1.0
+            filter.gain.value = 0
+            return filter
+        })
+        // dryGain → eq[0] → eq[1] → ... → eq[7] → destination
+        dryGain.connect(eqFilters[0])
+        for (let i = 0; i < eqFilters.length - 1; i++) {
+            eqFilters[i].connect(eqFilters[i + 1])
+        }
+        eqFilters[eqFilters.length - 1].connect(ctx.destination)
 
         // Path B: Reverb
         hub.connect(reverbConvolver)
@@ -751,144 +717,27 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         widthMerger.connect(widthGain)
         widthGain.connect(ctx.destination)
 
-        // === PHASE 2: MODULATION EFFECTS (EXTREME VERSION) ===
-
-        // Path F: Flanger (EXTREME jet engine / alien sound)
-        const flangerGain = ctx.createGain()
-        flangerGain.gain.value = 0
-        const flangerDelay = ctx.createDelay(0.1)
-        flangerDelay.delayTime.value = 0.015 // 15ms base delay
-        const flangerFeedback = ctx.createGain()
-        flangerFeedback.gain.value = 0.95  // EXTREME feedback - almost oscillating
-        hub.connect(flangerDelay)
-        flangerDelay.connect(flangerGain)
-        flangerDelay.connect(flangerFeedback)
-        flangerFeedback.connect(flangerDelay)
-        flangerGain.connect(ctx.destination)
-        // Flanger LFO - extreme modulation
-        const flangerLfo = ctx.createOscillator()
-        const flangerLfoGain = ctx.createGain()
-        flangerLfo.type = 'sine'
-        flangerLfo.frequency.value = 0.1 // Very slow for dramatic sweep
-        flangerLfoGain.gain.value = 0.02 // Modulate 20ms (EXTREME)
-        flangerLfo.connect(flangerLfoGain)
-        flangerLfoGain.connect(flangerDelay.delayTime)
-        flangerLfo.start()
-
-        // Path G: Tremolo (EXTREME helicopter chop)
-        const tremoloGain = ctx.createGain()
-        tremoloGain.gain.value = 1
-        const tremoloDepth = ctx.createGain()
-        tremoloDepth.gain.value = 0
-        hub.connect(tremoloGain)
-        tremoloGain.connect(ctx.destination)
-        // Tremolo LFO - fast for helicopter effect
-        const tremoloLfo = ctx.createOscillator()
-        tremoloLfo.type = 'square' // Square wave for hard chop
-        tremoloLfo.frequency.value = 10 // Fast 10Hz chop
-        tremoloLfo.connect(tremoloDepth)
-        tremoloDepth.connect(tremoloGain.gain)
-        tremoloLfo.start()
-
-        // === PHASE 3: NEW EFFECTS ===
-
-        // Path H: 8D Audio (auto-rotation panning)
-        const audio8DPanner = ctx.createStereoPanner()
-        audio8DPanner.pan.value = 0
-        const audio8DGain = ctx.createGain()
-        audio8DGain.gain.value = 0 // Wet mix
-        hub.connect(audio8DPanner)
-        audio8DPanner.connect(audio8DGain)
-        audio8DGain.connect(ctx.destination)
-        // 8D LFO - rotates pan L to R continuously
-        const audio8DLfo = ctx.createOscillator()
-        const audio8DLfoGain = ctx.createGain()
-        audio8DLfo.type = 'sine'
-        audio8DLfo.frequency.value = 0.15 // Slow rotation
-        audio8DLfoGain.gain.value = 1 // Full L-R sweep
-        audio8DLfo.connect(audio8DLfoGain)
-        audio8DLfoGain.connect(audio8DPanner.pan)
-        audio8DLfo.start()
-
-        // 8-band EQ chain (in series, inserted into dry path)
-        const eqFilters: BiquadFilterNode[] = EQ_BANDS.map((band) => {
-            const filter = ctx.createBiquadFilter()
-            filter.type = band.type
-            filter.frequency.value = band.freq
-            if (band.type === 'peaking') filter.Q.value = 1.0
-            filter.gain.value = 0
-            return filter
-        })
-        // Insert EQ into dry path: dryGain → eq[0] → eq[1] → ... → eq[7] → normGain → destination
-        dryGain.disconnect()
-        dryGain.connect(eqFilters[0])
-        for (let i = 0; i < eqFilters.length - 1; i++) {
-            eqFilters[i].connect(eqFilters[i + 1])
-        }
-
-        // Normalization gain node (after EQ, before destination)
-        const normGain = ctx.createGain()
-        normGain.gain.value = 1.0
-        const normAnalyser = ctx.createAnalyser()
-        normAnalyser.fftSize = 2048
-        eqFilters[eqFilters.length - 1].connect(normAnalyser)
-        normAnalyser.connect(normGain)
-        normGain.connect(ctx.destination)
-
         // Store Refs
         sourceNodeRef.current = source
-        highPassNodeRef.current = highPass
-        lowPassNodeRef.current = lowPass
         bassNodeRef.current = bassFilter
-        saturationNodeRef.current = saturationShaper
-        compressorNodeRef.current = compressor
         pannerNodeRef.current = panner
         reverbNodeRef.current = reverbConvolver
         delayNodeRef.current = delay
         delayGainNodeRef.current = delayWetGain
-
         dryGainNodeRef.current = dryGain
         wetGainNodeRef.current = wetGain
         stereoWidthGainNodeRef.current = widthGain
-
-        // Phase 2 refs
-        flangerGainRef.current = flangerGain
-        flangerDelayRef.current = flangerDelay
-        flangerLfoRef.current = flangerLfo
-        tremoloGainRef.current = tremoloGain
-        tremoloLfoRef.current = tremoloLfo
-        tremoloDepthRef.current = tremoloDepth
-
-        // Phase 3 refs
-        audio8DPannerRef.current = audio8DPanner
-        audio8DLfoRef.current = audio8DLfo
-        audio8DGainRef.current = audio8DGain
-        // EQ refs
         eqNodesRef.current = eqFilters
-        // Normalization refs
-        normGainNodeRef.current = normGain
-        normAnalyserRef.current = normAnalyser
 
         // Apply Initial Values
         bassFilter.gain.value = bassLevel
-        saturationShaper.curve = makeSaturationCurve(saturationLevel)
         dryGain.gain.value = 1
         wetGain.gain.value = reverbLevel
-        highPass.frequency.value = highPassLevel * 3000
-        lowPass.frequency.value = lowPassLevel * 19920 + 80 // Map 0-1 to 80-20000Hz
         delayWetGain.gain.value = delayLevel
         widthGain.gain.value = stereoWidthLevel
         panner.pan.value = panningLevel
-        // Compressor: map 0-1 to threshold -100 to 0, ratio 1 to 20
-        compressor.threshold.value = -100 * compressorLevel
-        compressor.ratio.value = 1 + (19 * compressorLevel)
-        // Phase 2 initial values
-        flangerGain.gain.value = flangerLevel
-        tremoloDepth.gain.value = tremoloLevel
-        // Phase 3 initial values
-        audio8DGain.gain.value = audio8DLevel
 
-        console.log("AudioFX: Graph Connected successfully (Phase 1 + 2 + 3 effects)")
+        console.log("AudioFX: Simplified graph connected successfully")
     }, [])
 
     // Initialize Audio Engine
@@ -901,29 +750,12 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
 
     // --- UPDATERS ---
 
-    // High Pass (Radio)
-    useEffect(() => {
-        if (highPassNodeRef.current && audioContextRef.current) {
-            // Map 0-1 to 20Hz - 3000Hz exponentially better, but linear is fine for radio effect
-            // Let's do: 0 = 0Hz, 1 = 3000Hz
-            const freq = highPassLevel * 3000
-            highPassNodeRef.current.frequency.setTargetAtTime(freq, audioContextRef.current.currentTime, 0.1)
-        }
-    }, [highPassLevel])
-
     // Bass
     useEffect(() => {
         if (bassNodeRef.current && audioContextRef.current) {
             bassNodeRef.current.gain.setTargetAtTime(bassLevel, audioContextRef.current.currentTime, 0.1)
         }
     }, [bassLevel])
-
-    // Saturation
-    useEffect(() => {
-        if (saturationNodeRef.current) {
-            saturationNodeRef.current.curve = makeSaturationCurve(saturationLevel)
-        }
-    }, [saturationLevel])
 
     // Delay
     useEffect(() => {
@@ -936,7 +768,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     useEffect(() => {
         if (stereoWidthGainNodeRef.current && audioContextRef.current) {
             stereoWidthGainNodeRef.current.gain.setTargetAtTime(stereoWidthLevel, audioContextRef.current.currentTime, 0.1)
-            // Compensate Dry to avoid doubling volume? No, Haas is an effect layer.
         }
     }, [stereoWidthLevel])
 
@@ -960,52 +791,12 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         }
     }, [pitchLevel])
 
-    // Low Pass (Muffled) - NEW
-    useEffect(() => {
-        if (lowPassNodeRef.current && audioContextRef.current) {
-            // Map 0-1 to 80-20000Hz (0 = very muffled, 1 = open)
-            const freq = lowPassLevel * 19920 + 80
-            lowPassNodeRef.current.frequency.setTargetAtTime(freq, audioContextRef.current.currentTime, 0.1)
-        }
-    }, [lowPassLevel])
-
-    // Panning (L/R) - NEW
+    // Panning (L/R)
     useEffect(() => {
         if (pannerNodeRef.current && audioContextRef.current) {
             pannerNodeRef.current.pan.setTargetAtTime(panningLevel, audioContextRef.current.currentTime, 0.05)
         }
     }, [panningLevel])
-
-    // Compressor - NEW
-    useEffect(() => {
-        if (compressorNodeRef.current) {
-            // EXTREME Compressor: map 0-1 to threshold -100 to 0, ratio 1 to 20
-            compressorNodeRef.current.threshold.value = -100 * compressorLevel
-            compressorNodeRef.current.ratio.value = 1 + (19 * compressorLevel)
-        }
-    }, [compressorLevel])
-
-    // Flanger - Phase 2
-    useEffect(() => {
-        if (flangerGainRef.current && audioContextRef.current) {
-            flangerGainRef.current.gain.setTargetAtTime(flangerLevel, audioContextRef.current.currentTime, 0.1)
-        }
-    }, [flangerLevel])
-
-    // Tremolo - Phase 2
-    useEffect(() => {
-        if (tremoloDepthRef.current && audioContextRef.current) {
-            // Map 0-1 to 0-1 (full depth for intense choppy effect)
-            tremoloDepthRef.current.gain.setTargetAtTime(tremoloLevel, audioContextRef.current.currentTime, 0.1)
-        }
-    }, [tremoloLevel])
-
-    // 8D Audio - Phase 3
-    useEffect(() => {
-        if (audio8DGainRef.current && audioContextRef.current) {
-            audio8DGainRef.current.gain.setTargetAtTime(audio8DLevel, audioContextRef.current.currentTime, 0.1)
-        }
-    }, [audio8DLevel])
 
     // 8-band EQ
     useEffect(() => {
@@ -1017,41 +808,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             })
         }
     }, [eqBands])
-
-    // Audio Normalization
-    useEffect(() => {
-        if (!normGainNodeRef.current || !normAnalyserRef.current || !audioContextRef.current) return
-
-        if (!audioNormalization) {
-            normGainNodeRef.current.gain.value = 1.0
-            if (normAnimFrameRef.current) cancelAnimationFrame(normAnimFrameRef.current)
-            return
-        }
-
-        const analyser = normAnalyserRef.current
-        const gainNode = normGainNodeRef.current
-        const dataArray = new Float32Array(analyser.fftSize)
-        const targetRms = 0.2
-
-        const normalize = () => {
-            analyser.getFloatTimeDomainData(dataArray)
-            let sumSquares = 0
-            for (let i = 0; i < dataArray.length; i++) {
-                sumSquares += dataArray[i] * dataArray[i]
-            }
-            const rms = Math.sqrt(sumSquares / dataArray.length)
-            if (rms > 0.001) {
-                const desiredGain = Math.min(3.0, Math.max(0.3, targetRms / rms))
-                gainNode.gain.setTargetAtTime(desiredGain, audioContextRef.current!.currentTime, 0.3)
-            }
-            normAnimFrameRef.current = requestAnimationFrame(normalize)
-        }
-        normAnimFrameRef.current = requestAnimationFrame(normalize)
-
-        return () => {
-            if (normAnimFrameRef.current) cancelAnimationFrame(normAnimFrameRef.current)
-        }
-    }, [audioNormalization])
 
     // Load tracks
     const loadTracks = useCallback(async () => {
@@ -1075,9 +831,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                 return loadedTracks
             })
             shuffleHistoryRef.current = []
-            if (loadedTracks.length > 0 && currentTrackIndex === -1) {
-                setCurrentTrackIndex(0)
-            }
+            // Don't auto-select first track - let user choose
         } catch (error) {
             console.error('Failed to load tracks:', error)
         } finally {
@@ -1308,17 +1062,32 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
 
     useEffect(() => {
         if (isActive) {
-            // If tracks were preloaded, just load playlists
-            if (tracks.length > 0) {
-                loadPlaylists()
-            } else {
+            // If tracks were preloaded from parent, don't reload
+            // Check initialTracks (prop) not tracks (state) to avoid race condition
+            if (!initialTracks || initialTracks.length === 0) {
                 loadTracks()
-                loadPlaylists()
             }
-            loadFxPresets()
+            // Defer secondary loads to not block initial render
+            const timer = setTimeout(() => {
+                loadPlaylists()
+                loadFxPresets()
+            }, 100)
+            return () => clearTimeout(timer)
         }
     }, [isActive])
 
+    // Virtualization: measure container height
+    useEffect(() => {
+        const container = tracklistRef.current
+        if (!container) return
+
+        const measure = () => setContainerHeight(container.clientHeight)
+        measure()
+
+        const resizeObserver = new ResizeObserver(measure)
+        resizeObserver.observe(container)
+        return () => resizeObserver.disconnect()
+    }, [])
 
 
     // Close menu when clicking outside
@@ -1346,7 +1115,13 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         // Connect audio element immediately if strict context needed, but usually on play is fine.
 
         audio.addEventListener('timeupdate', () => {
-            setCurrentTime(audio.currentTime)
+            currentTimeRef.current = audio.currentTime
+            // Throttle state updates to ~4/sec (every 250ms)
+            const now = performance.now()
+            if (now - lastTimeUpdateRef.current >= 250) {
+                lastTimeUpdateRef.current = now
+                setCurrentTime(audio.currentTime)
+            }
             // Phase 4: A-B Loop Logic
             if (isLoopActiveRef.current && loopARef.current !== null && loopBRef.current !== null) {
                 if (audio.currentTime >= loopBRef.current) {
@@ -1423,13 +1198,34 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         // Auto-play if triggered by track ending or if already playing
         if (isPlaying || shouldAutoPlayRef.current) {
             shouldAutoPlayRef.current = false
-            if (audioContextRef.current?.state === 'suspended') {
-                audioContextRef.current.resume()
+
+            const doPlay = () => {
+                if (audioContextRef.current?.state === 'suspended') {
+                    audioContextRef.current.resume()
+                }
+                audio.play().catch(err => {
+                    console.error('[Audio] Play failed:', err)
+                    setIsPlaying(false)
+                })
             }
-            audio.play().catch(err => {
-                console.error('[Audio] Play failed:', err)
-                setIsPlaying(false)
-            })
+
+            // Use canplay (fires earlier than canplaythrough, more reliable with custom protocols)
+            // with a timeout fallback in case the event never fires
+            let played = false
+            const onCanPlay = () => {
+                if (played) return
+                played = true
+                doPlay()
+            }
+            audio.addEventListener('canplay', onCanPlay, { once: true })
+            // Fallback: if canplay doesn't fire within 500ms, try to play anyway
+            setTimeout(() => {
+                if (!played) {
+                    played = true
+                    audio.removeEventListener('canplay', onCanPlay)
+                    doPlay()
+                }
+            }, 500)
         }
     }, [currentTrackIndex])
 
@@ -1446,7 +1242,21 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
     }, [repeatMode])
 
     const handlePlayPause = useCallback(() => {
-        if (!audioRef.current || !currentTrack) return
+        if (!audioRef.current) return
+
+        // If no track selected, select first track and play
+        if (!currentTrack) {
+            if (displayTracks.length > 0) {
+                const firstTrack = displayTracks[0]
+                const index = tracks.findIndex(t => t.path === firstTrack.path)
+                if (index !== -1) {
+                    shouldAutoPlayRef.current = true
+                    setCurrentTrackIndex(index)
+                }
+            }
+            return
+        }
+
         if (isPlaying) {
             audioRef.current.pause()
         } else {
@@ -1463,7 +1273,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                 }
             })
         }
-    }, [currentTrack, isPlaying])
+    }, [currentTrack, isPlaying, displayTracks, tracks])
 
     // Global Shortcuts
     useEffect(() => {
@@ -1494,7 +1304,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             return
         }
 
-        const displayTracks = getDisplayTracks()
         if (displayTracks.length === 0) return
 
         const currentTrack = tracks[currentTrackIndex]
@@ -1544,10 +1353,9 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             const newGlobalIndex = tracks.findIndex(t => t.path === nextTrack.path)
             if (newGlobalIndex !== -1) setCurrentTrackIndex(newGlobalIndex)
         }
-    }, [getDisplayTracks, tracks, currentTrackIndex, isShuffle])
+    }, [displayTracks, tracks, currentTrackIndex, isShuffle])
 
     const handlePrevious = useCallback(() => {
-        const displayTracks = getDisplayTracks()
         if (displayTracks.length === 0) return
 
         // 3-second restart: if past 3s, restart current track
@@ -1588,7 +1396,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
 
         const newGlobalIndex = tracks.findIndex(t => t.path === prevTrack.path)
         if (newGlobalIndex !== -1) setCurrentTrackIndex(newGlobalIndex)
-    }, [getDisplayTracks, tracks, currentTrackIndex, isShuffle])
+    }, [displayTracks, tracks, currentTrackIndex, isShuffle])
 
     // Media Session API Support
     useEffect(() => {
@@ -1620,8 +1428,8 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         }
     }, [isPlaying, handlePlayPause, handlePrevious, handleNext])
 
-    // Broadcast playback state to mini player
-    useEffect(() => {
+    // Broadcast playback state to mini player (metadata changes sync immediately)
+    const syncPlaybackStateNow = useCallback(() => {
         const api = window.electronAPI as any
         if (!api?.syncPlaybackState) return
         api.syncPlaybackState({
@@ -1630,14 +1438,29 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             album: currentTrack?.album || '',
             coverArt: currentTrack ? getTrackCoverArt(currentTrack) : null,
             isPlaying,
-            currentTime,
+            currentTime: currentTimeRef.current,
             duration,
             volume,
             theme,
             accentColor,
-            artColor
+            artColor,
+            playerModel
         })
-    }, [currentTrack?.path, isPlaying, Math.floor(currentTime), duration, volume, theme, accentColor, artColor])
+    }, [currentTrack?.path, isPlaying, duration, volume, theme, accentColor, artColor, playerModel, getTrackCoverArt])
+
+    // Sync immediately when metadata/state changes
+    useEffect(() => {
+        syncPlaybackStateNow()
+    }, [syncPlaybackStateNow])
+
+    // Sync currentTime to mini player on a 1-second interval (avoids per-frame IPC)
+    useEffect(() => {
+        if (!isPlaying) return
+        const interval = setInterval(() => {
+            syncPlaybackStateNow()
+        }, 1000)
+        return () => clearInterval(interval)
+    }, [isPlaying, syncPlaybackStateNow])
 
     // Listen for mini player commands
     useEffect(() => {
@@ -1661,7 +1484,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                 case 'next': handleNext(); break
                 case 'prev': handlePrevious(); break
                 case 'play-random': {
-                    const displayTracks = getDisplayTracks()
                     if (displayTracks.length > 0) {
                         const randomIdx = Math.floor(Math.random() * displayTracks.length)
                         const track = displayTracks[randomIdx]
@@ -1676,7 +1498,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             }
         })
         return cleanup
-    }, [handlePlayPause, handleNext, handlePrevious, getDisplayTracks, tracks])
+    }, [handlePlayPause, handleNext, handlePrevious, displayTracks, tracks])
 
     // Updated onEnded
     const onTrackEnded = useCallback(() => {
@@ -1715,7 +1537,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
             return
         }
 
-        const displayTracks = getDisplayTracks()
         const currentTrack = tracks[currentTrackIndex]
         const currentIdx = displayTracks.findIndex(t => t.path === currentTrack?.path)
 
@@ -1733,7 +1554,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         // Repeat All: Always play next (handleNext wraps around at end)
         shouldAutoPlayRef.current = true
         handleNext()
-    }, [repeatMode, handleNext, getDisplayTracks, tracks, currentTrackIndex, isShuffle, playbackQueue.length])
+    }, [repeatMode, handleNext, displayTracks, tracks, currentTrackIndex, isShuffle, playbackQueue.length])
 
     // Handle Auto Next (Playlist aware)
     useEffect(() => {
@@ -1828,13 +1649,7 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
         }
     }
 
-    // Format time helper
-    const formatTime = (time: number) => {
-        if (!time || isNaN(time)) return '0:00'
-        const minutes = Math.floor(time / 60)
-        const seconds = Math.floor(time % 60)
-        return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
-    }
+
 
     // A-B Loop Handlers
     const handleSetLoopA = () => {
@@ -1974,8 +1789,15 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                     ))}
                                 </div>
                             )
-                        ) : displayedArt ? (
-                            <CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} />
+                        ) : currentTrack ? (
+                            <Suspense fallback={<CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} />}>
+                                {playerModel === 'vinyl'
+                                    ? <VinylDisc3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} isPlaying={isPlaying} />
+                                    : playerModel === 'cd'
+                                        ? <CD3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} isPlaying={isPlaying} />
+                                        : <CoverArtCube3D src={displayedArt} artist={currentTrack?.artist} album={currentTrack?.album} color={artColor || undefined} />
+                                }
+                            </Suspense>
                         ) : (
                             <div className="no-art">
                                 <MusicIcon size={80} strokeWidth={1} style={{ opacity: 0.3 }} />
@@ -2061,59 +1883,62 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
 
                     <div className={`player-tracklist ${isCompact ? 'compact-list' : ''}`}>
                         <div
+                            ref={tracklistRef}
                             className="tracklist-scroll animate-enter"
                             key={activePlaylist ? activePlaylist.id : 'library'}
-                            onScroll={() => {
+                            onScroll={(e) => {
+                                setScrollTop(e.currentTarget.scrollTop)
                                 if (trackMenuOpen) {
                                     setTrackMenuOpen(null)
                                 }
                             }}
                         >
-                            {filteredTracks.map((track, index) => {
-                                const isActive = currentTrack && track.path === currentTrack.path
-                                return (
-                                    <div
-                                        key={track.path}
-                                        className={`track-item ${isActive ? 'active' : ''}`}
-                                    >
-                                        <div className="track-main" onClick={() => handleTrackSelect(track)}>
-                                            <div className="track-index">
-                                                {isActive && isPlaying ? (
-                                                    <div className="mini-equalizer">
-                                                        <span></span><span></span><span></span>
-                                                    </div>
-                                                ) : (
-                                                    <span className="index-number">{index + 1}</span>
-                                                )}
-                                            </div>
-                                            <div className="track-info">
-                                                <span className="track-title">{track.title}</span>
-                                            </div>
-                                            <span className="track-duration">{formatTime(track.duration)}</span>
-                                        </div>
-
-                                        {/* Track Menu Button */}
-                                        <button
-                                            className="track-menu-btn"
-                                            onClick={(e) => {
-                                                e.stopPropagation()
-                                                if (trackMenuOpen === track.path) {
-                                                    setTrackMenuOpen(null)
-                                                } else {
-                                                    const rect = e.currentTarget.getBoundingClientRect()
-                                                    setMenuPosition({ x: rect.right, y: rect.bottom })
-                                                    setTrackMenuOpen(track.path)
-                                                }
-                                            }}
+                            {/* Virtualized container with total height */}
+                            <div style={{ height: virtualizedData.totalHeight, position: 'relative' }}>
+                                {virtualizedData.visibleTracks.map(({ track, index, style }) => {
+                                    const isActive = currentTrack && track.path === currentTrack.path
+                                    return (
+                                        <div
+                                            key={track.path}
+                                            className={`track-item ${isActive ? 'active' : ''}`}
+                                            style={style}
                                         >
-                                            <MoreIcon size={16} />
-                                        </button>
+                                            <div className="track-main" onClick={() => handleTrackSelect(track)}>
+                                                <div className="track-index">
+                                                    {isActive && isPlaying ? (
+                                                        <div className="mini-equalizer">
+                                                            <span></span><span></span><span></span>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="index-number">{index + 1}</span>
+                                                    )}
+                                                </div>
+                                                <div className="track-info">
+                                                    <span className="track-title">{track.title}</span>
+                                                </div>
+                                                <span className="track-duration">{formatTime(track.duration)}</span>
+                                            </div>
 
-                                        {/* Track Menu Dropdown */}
-
-                                    </div>
-                                )
-                            })}
+                                            {/* Track Menu Button */}
+                                            <button
+                                                className="track-menu-btn"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    if (trackMenuOpen === track.path) {
+                                                        setTrackMenuOpen(null)
+                                                    } else {
+                                                        const rect = e.currentTarget.getBoundingClientRect()
+                                                        setMenuPosition({ x: rect.right, y: rect.bottom })
+                                                        setTrackMenuOpen(track.path)
+                                                    }
+                                                }}
+                                            >
+                                                <MoreIcon size={16} />
+                                            </button>
+                                        </div>
+                                    )
+                                })}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2140,34 +1965,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                             title={bassLevel.toString()} />
                                     </div>
                                     <div className="fx-row">
-                                        <label>Saturation</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={saturationLevel}
-                                            onChange={(e) => { setSaturationLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={(saturationLevel * 100).toFixed(0) + '%'} />
-                                    </div>
-                                    <div className="fx-row">
-                                        <label>Low Pass</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={lowPassLevel}
-                                            onChange={(e) => { setLowPassLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={lowPassLevel < 1 ? 'Muffled' : 'Open'} />
-                                    </div>
-                                    <div className="fx-row">
-                                        <label>Radio Filter</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={highPassLevel}
-                                            onChange={(e) => { setHighPassLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={(highPassLevel * 100).toFixed(0) + '%'} />
-                                    </div>
-                                </div>
-
-                                <div className="fx-section">
-                                    <div className="fx-section-header">Dynamics</div>
-                                    <div className="fx-row">
-                                        <label>Compress</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={compressorLevel}
-                                            onChange={(e) => { setCompressorLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={(compressorLevel * 100).toFixed(0) + '%'} />
-                                    </div>
-                                    <div className="fx-row">
                                         <label>Speed / Pitch</label>
                                         <input type="range" min="0.25" max="3.0" step="0.01" value={pitchLevel}
                                             onChange={(e) => { setPitchLevel(parseFloat(e.target.value)); markCustom() }}
@@ -2175,24 +1972,6 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                     </div>
                                 </div>
 
-                                <div className="fx-section">
-                                    <div className="fx-section-header">Modulation</div>
-                                    <div className="fx-row">
-                                        <label>Flanger</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={flangerLevel}
-                                            onChange={(e) => { setFlangerLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={(flangerLevel * 100).toFixed(0) + '%'} />
-                                    </div>
-                                    <div className="fx-row">
-                                        <label>Tremolo</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={tremoloLevel}
-                                            onChange={(e) => { setTremoloLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={(tremoloLevel * 100).toFixed(0) + '%'} />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="fx-column">
                                 <div className="fx-section">
                                     <div className="fx-section-header">Space</div>
                                     <div className="fx-row">
@@ -2214,19 +1993,15 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                             title={(stereoWidthLevel * 100).toFixed(0) + '%'} />
                                     </div>
                                     <div className="fx-row">
-                                        <label>8D Audio</label>
-                                        <input type="range" min="0" max="1" step="0.01" value={audio8DLevel}
-                                            onChange={(e) => { setAudio8DLevel(parseFloat(e.target.value)); markCustom() }}
-                                            title={audio8DLevel > 0 ? 'Rotating' : 'Off'} />
-                                    </div>
-                                    <div className="fx-row">
                                         <label>Pan L/R</label>
                                         <input type="range" min="-1" max="1" step="0.01" value={panningLevel}
                                             onChange={(e) => { setPanningLevel(parseFloat(e.target.value)); markCustom() }}
                                             title={panningLevel < 0 ? `L ${Math.abs(panningLevel * 100).toFixed(0)}%` : panningLevel > 0 ? `R ${(panningLevel * 100).toFixed(0)}%` : 'Center'} />
                                     </div>
                                 </div>
+                            </div>
 
+                            <div className="fx-column">
                                 <div className="fx-section eq-section">
                                     <div className="fx-section-header">Equalizer</div>
                                     <div className="eq-band-row">
@@ -2275,11 +2050,8 @@ export default function MusicPlayer({ isActive, initialTracks, onRefreshTracks, 
                                 )}
                             </div>
                             <button className="fx-reset-btn" onClick={() => {
-                                setBassLevel(0); setReverbLevel(0); setPitchLevel(1); setSaturationLevel(0);
-                                setHighPassLevel(0); setDelayLevel(0); setStereoWidthLevel(0);
-                                setLowPassLevel(1); setPanningLevel(0); setCompressorLevel(0);
-                                setFlangerLevel(0); setTremoloLevel(0);
-                                setAudio8DLevel(0);
+                                setBassLevel(0); setReverbLevel(0); setPitchLevel(1);
+                                setDelayLevel(0); setStereoWidthLevel(0); setPanningLevel(0);
                                 setEqBands([0, 0, 0, 0, 0, 0, 0, 0]);
                                 setActivePresetId(null);
                             }}>Reset</button>

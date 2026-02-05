@@ -4044,6 +4044,12 @@ body {
   position: relative;
   display: flex;
   align-items: center;
+  box-sizing: border-box;
+  height: 44px;
+}
+
+.compact-list .track-item {
+  height: 36px;
 }
 
 .track-main {

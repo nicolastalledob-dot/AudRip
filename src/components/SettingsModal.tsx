@@ -165,11 +165,12 @@ export interface Settings {
     notifications: boolean
     // Playback
     crossfadeDuration: number
-    audioNormalization: boolean
     // Surprise mode
     surpriseMode: boolean
     // Adaptive colors
     adaptiveColors: boolean
+    // 3D model
+    playerModel: 'cube' | 'vinyl' | 'cd'
 }
 
 
@@ -262,6 +263,31 @@ function SettingsModal({ settings, onUpdateSettings, onClose }: SettingsModalPro
                             </button>
                         </div>
                         <p className="setting-desc">Theme and accent color adapt to the album art of the current track.</p>
+
+                        <div className="setting-color-row">
+                            <span className="color-label">3D Model</span>
+                            <div className="setting-options" style={{ flex: 'unset' }}>
+                                <button
+                                    className={`setting-opt ${(settings.playerModel || 'cube') === 'cube' ? 'active' : ''}`}
+                                    onClick={() => onUpdateSettings({ ...settings, playerModel: 'cube' })}
+                                >
+                                    Cube
+                                </button>
+                                <button
+                                    className={`setting-opt ${settings.playerModel === 'vinyl' ? 'active' : ''}`}
+                                    onClick={() => onUpdateSettings({ ...settings, playerModel: 'vinyl' })}
+                                >
+                                    Vinyl
+                                </button>
+                                <button
+                                    className={`setting-opt ${settings.playerModel === 'cd' ? 'active' : ''}`}
+                                    onClick={() => onUpdateSettings({ ...settings, playerModel: 'cd' })}
+                                >
+                                    CD
+                                </button>
+                            </div>
+                        </div>
+                        <p className="setting-desc">Choose the 3D visualization style for the player.</p>
                     </div>
 
                     {/* Audio Format */}
@@ -393,15 +419,6 @@ function SettingsModal({ settings, onUpdateSettings, onClose }: SettingsModalPro
                                 />
                                 <span className="slider-value">{(settings.crossfadeDuration || 0) === 0 ? 'Off' : `${settings.crossfadeDuration}s`}</span>
                             </div>
-                        </div>
-                        <div className="setting-color-row">
-                            <span className="color-label">Audio Normalization</span>
-                            <button
-                                className={`setting-toggle ${settings.audioNormalization ? 'active' : ''}`}
-                                onClick={() => onUpdateSettings({ ...settings, audioNormalization: !settings.audioNormalization })}
-                            >
-                                {settings.audioNormalization ? 'On' : 'Off'}
-                            </button>
                         </div>
                     </div>
 

@@ -55,9 +55,9 @@ function App() {
         concurrentDownloads: 2,
         notifications: true,
         crossfadeDuration: 0,
-        audioNormalization: false,
         surpriseMode: false,
-        adaptiveColors: false
+        adaptiveColors: false,
+        playerModel: 'cube'
     })
 
     const [downloadState, setDownloadState] = useState<DownloadState>({ stage: 'idle', percent: 0 })
@@ -711,10 +711,10 @@ function App() {
                                 initialTracks={musicLibrary}
                                 onRefreshTracks={refreshMusicLibrary}
                                 crossfadeDuration={settings.crossfadeDuration || 0}
-                                audioNormalization={settings.audioNormalization || false}
                                 theme={settings.theme || 'dark'}
                                 accentColor={settings.accentColor || DEFAULT_ACCENT_COLOR}
                                 adaptiveColors={settings.adaptiveColors || false}
+                                playerModel={settings.playerModel || 'cube'}
                             />
                         </div>
 

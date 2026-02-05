@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { Play as PlayIcon, Pause as PauseIcon, SkipBack as SkipBackIcon, SkipForward as SkipForwardIcon, Maximize2 as ExpandIcon } from 'lucide-react'
 import * as THREE from 'three'
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js'
@@ -6,6 +6,8 @@ import { FontLoader } from 'three/addons/loaders/FontLoader.js'
 import helvetikerBold from 'three/examples/fonts/helvetiker_bold.typeface.json'
 import { THEME_PRESETS, ThemeKey } from './SettingsModal'
 import CoverArtCube3D from './CoverArtCube3D'
+const VinylDisc3D = lazy(() => import('./VinylDisc3D'))
+const CD3D = lazy(() => import('./CD3D'))
 
 interface PlaybackState {
     title: string
@@ -19,6 +21,7 @@ interface PlaybackState {
     theme?: string
     accentColor?: string
     artColor?: string | null
+    playerModel?: string
 }
 
 const MarqueeMini = ({ text, className }: { text: string, className?: string }) => {
@@ -351,7 +354,14 @@ export default function MiniPlayer() {
                 </div>
             ) : (
                 <>
-                    <CoverArtCube3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" />
+                    <Suspense fallback={<CoverArtCube3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" />}>
+                        {state.playerModel === 'vinyl'
+                            ? <VinylDisc3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" isPlaying={state.isPlaying} />
+                            : state.playerModel === 'cd'
+                                ? <CD3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" isPlaying={state.isPlaying} />
+                                : <CoverArtCube3D src={state.coverArt} artist={state.artist} album={state.album} color={state.artColor || state.accentColor} className="mini-player-art-3d" />
+                        }
+                    </Suspense>
                     <div className="mini-player-info">
                         <MarqueeMini text={state.title} className="mini-player-title" />
                         <MarqueeMini text={state.artist} className="mini-player-artist" />
